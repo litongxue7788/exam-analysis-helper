@@ -1,0 +1,14 @@
+{
+  "app": {
+    "name": "试卷分析助手",
+    "version": "0.1.0"
+  },
+  "defaults": {
+    "modelProvider": "doubao",
+    "language": "zh-CN",
+    "maxReportLength": 1000
+  },
+  "api": {
+    "timeout": 30000
+  }
+}

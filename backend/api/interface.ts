@@ -1,0 +1,91 @@
+import { Student, ExamInfo, QuestionStructure, ScoreRecord, ClassStatistics } from '../core/types';
+
+// =================================================================================
+// API 接口定义
+// 这里定义了前端（Web/小程序）如何向后端发送请求，以及后端会返回什么
+// =================================================================================
+
+/**
+ * 接口地址: POST /api/analyze-exam
+ * 描述: 提交一场考试的完整数据，请求生成分析报告
+ */
+
+// 1. 请求体 (Request Body)
+export interface AnalyzeExamRequest {
+  // 学生信息
+  student: Student;
+  
+  // 考试元数据
+  exam: ExamInfo;
+  
+  // 该学生的具体成绩
+  score: ScoreRecord;
+  
+  // 试卷题目结构 (所有题目列表)
+  questions: QuestionStructure[];
+  
+  // 班级整体统计情况 (用于对比分析)
+  classStats: ClassStatistics;
+  
+  // 用户选择的大模型服务商
+  modelProvider: 'doubao' | 'aliyun' | 'zhipu';
+  
+  // (可选) 额外的老师评语或上下文
+  teacherNote?: string;
+}
+
+// 2. 响应体 (Response Body)
+export interface AnalyzeExamResponse {
+  // 请求处理是否成功
+  success: boolean;
+  
+  // 如果失败，返回错误信息
+  errorMessage?: string;
+  
+  // 分析结果数据 (核心部分)
+  data?: {
+    // 成绩摘要 (用于前端展示小卡片)
+    summary: {
+      totalScore: number;
+      rank: number;
+      beatPercentage: number; // 击败了全班多少%的人
+      strongestKnowledge: string; // 最强知识点
+      weakestKnowledge: string;   // 最弱知识点
+    };
+    
+    // 大模型生成的文字报告 (结构化)
+    report: {
+      // 学生版视角
+      forStudent: {
+        overall: string;       // 整体评价
+        problems: string[];    // 主要问题列表
+        advice: string[];      // 建议列表
+      };
+      
+      // 家长版视角
+      forParent: {
+        summary: string;       // 总结
+        guidance: string;      // 辅导建议
+      };
+    };
+    
+    // 原始的大模型返回文本 (用于调试或备用)
+    rawLlmOutput: string;
+
+    // (可选) 卷面观感
+    paperAppearance?: {
+      rating: string;
+      content: string;
+    };
+
+    // (可选) 试卷名称
+    examName?: string;
+
+    // (可选) 题型分析
+    typeAnalysis?: {
+      type: string;
+      score: number;
+      full: number;
+    }[];
+  };
+}
