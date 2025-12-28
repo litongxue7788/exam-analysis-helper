@@ -6,13 +6,15 @@ import React, { useState } from 'react';
 import { Settings, Download, ArrowLeft, Share2 } from 'lucide-react';
 import { SettingsModal } from '../components/SettingsModal';
 import { PrintLayout } from '../components/PrintLayout';
+import { getAbilityInfoBySubject } from '../config/subjectConfig';
 
 interface ReportProps {
   data: any;
-  onBack?: () => void; // 添加返回回调
+  onBack?: () => void;
+  onOpenPractice?: () => void;
 }
 
-export const Report: React.FC<ReportProps> = ({ data, onBack }) => {
+export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice }) => {
   // 如果没有真实数据，使用默认结构防止崩溃，但尽量使用传入的 data
   // 假设 data 结构为 { studentInfo, summary, modules }
   const studentInfo = data?.studentInfo || {
@@ -52,47 +54,7 @@ export const Report: React.FC<ReportProps> = ({ data, onBack }) => {
   const typeAnalysis = data?.typeAnalysis || [];
 
   const getAbilityInfo = (type: string) => {
-    const t = type || '';
-    if (t.includes('计算')) {
-      return {
-        ability: '计算能力',
-        desc: '侧重对四则运算、分式运算等基础计算的准确性与熟练度，考察运算步骤是否规范、是否有粗心失误。'
-      };
-    }
-    if (t.includes('选择')) {
-      return {
-        ability: '基础识记与快速判断',
-        desc: '强调对概念、公式、定理的理解与辨析，要求在有限时间内快速判断正误，体现基础掌握和阅读理解能力。'
-      };
-    }
-    if (t.includes('填空')) {
-      return {
-        ability: '基础运算与灵活迁移',
-        desc: '在没有选项提示的情况下独立算出结果，考察学生把基础知识灵活迁移到题目中的能力。'
-      };
-    }
-    if (t.includes('应用') || t.includes('解决问题')) {
-      return {
-        ability: '综合应用与建模能力',
-        desc: '从实际情境中提取数学信息，建立算式或方程解决问题，考察阅读理解、建模思维和结果检验意识。'
-      };
-    }
-    if (t.includes('几何')) {
-      return {
-        ability: '空间想象与逻辑推理',
-        desc: '通过图形关系、角度与边长的推导，考察学生的空间想象能力和多步推理的条理性。'
-      };
-    }
-    if (t.includes('证明')) {
-      return {
-        ability: '逻辑表达与证明能力',
-        desc: '要求有清晰的推理链条和规范的文字表达，考察严谨思维和数学语言的组织能力。'
-      };
-    }
-    return {
-      ability: '综合能力',
-      desc: '综合考察本章节多个知识点的理解、运用和解题思路的完整性。'
-    };
+    return getAbilityInfoBySubject(type, studentInfo.subject);
   };
 
   const getPerformanceInfo = (score: number, full: number) => {
@@ -120,6 +82,48 @@ export const Report: React.FC<ReportProps> = ({ data, onBack }) => {
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  const practiceQuestions: string[] = data?.practiceQuestions || [];
+
+  const handleShare = () => {
+    const url = window.location.href;
+    const nav: any = navigator;
+    if (nav.share) {
+      nav
+        .share({
+          title: '试卷分析报告',
+          text: `${studentInfo.name}的${studentInfo.subject}分析报告`,
+          url
+        })
+        .catch(() => {});
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard
+        .writeText(url)
+        .then(() => {
+          showToast('已复制链接，可在微信/QQ 中粘贴发送');
+        })
+        .catch(() => {
+          showToast('复制失败，请手动长按地址栏复制链接');
+        });
+      return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = url;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      showToast('已复制链接，可在微信/QQ 中粘贴发送');
+    } catch {
+      showToast('当前环境不支持直接分享，请使用截图或导出 PDF');
+    }
+    document.body.removeChild(textarea);
   };
 
   return (
@@ -307,6 +311,37 @@ export const Report: React.FC<ReportProps> = ({ data, onBack }) => {
               </ul>
           </section>
           
+          <div
+            className="section-title"
+            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+          >
+            <span>五、巩固练习</span>
+            {onOpenPractice && (
+              <button
+                className="secondary-btn"
+                style={{ padding: '3px 10px', fontSize: 12 }}
+                onClick={onOpenPractice}
+              >
+                生成练习卷
+              </button>
+            )}
+          </div>
+          <section className="suggestions-card">
+            {practiceQuestions && practiceQuestions.length > 0 ? (
+              <ul className="suggestion-list">
+                {practiceQuestions.map((q, index) => (
+                  <li key={index}>{q}</li>
+                ))}
+              </ul>
+            ) : (
+              <div style={{ fontSize: 14, color: '#666', lineHeight: 1.7, padding: '10px 0' }}>
+                当前分析未生成具体的练习题。
+                <br/>
+                您可以点击右上角“生成练习卷”，在练习卷页面尝试自动补充题目。
+              </div>
+            )}
+          </section>
+
           <div style={{height: 40}}></div>
       </div>
       
@@ -342,20 +377,10 @@ export const Report: React.FC<ReportProps> = ({ data, onBack }) => {
                 }}>
                     <h3 style={{margin: 0, fontSize: 18}}>打印预览</h3>
                     <div style={{display: 'flex', gap: '10px'}}>
-                        <button onClick={() => {
-                            if (navigator.share) {
-                                navigator.share({
-                                    title: '试卷分析报告',
-                                    text: `${studentInfo.name}的${studentInfo.subject}分析报告`,
-                                    url: window.location.href
-                                }).catch(console.error);
-                            } else {
-                                showToast("当前环境不支持直接分享，请使用截图或导出 PDF");
-                            }
-                        }} style={{
+                        <button onClick={handleShare} style={{
                             border: 'none', background: 'transparent', fontSize: 14, color: '#666', cursor: 'pointer', display: 'flex', alignItems: 'center'
                         }}>
-                           <Share2 size={18} style={{marginRight: 4}}/> 分享
+                           <Share2 size={18} style={{marginRight: 4}}/> 分享/复制链接
                         </button>
                         <button onClick={() => setIsPreviewOpen(false)} style={{
                             border: 'none', background: 'transparent', fontSize: 24, color: '#999', cursor: 'pointer'

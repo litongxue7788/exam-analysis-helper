@@ -1,15 +1,14 @@
 import { useState, useEffect } from 'react'
 import { Home } from './pages/Home'
 import { Report } from './pages/Report'
+import { PracticeSheet } from './pages/PracticeSheet'
 import { PrintLayout } from './components/PrintLayout'
 import { MOCK_DATA } from './data/mock'
 import './App.css'
 
 function App() {
-  // 当前激活的 Tab：'analyze' 或 'report'
-  const [activeTab, setActiveTab] = useState<'analyze' | 'report'>('analyze');
+  const [activeTab, setActiveTab] = useState<'analyze' | 'report' | 'practice'>('analyze');
 
-  // 考试历史记录 (从 localStorage 读取)
   const [examHistory, setExamHistory] = useState<any[]>(() => {
     try {
       const saved = localStorage.getItem('examHistory');
@@ -20,24 +19,15 @@ function App() {
     }
   });
 
-  // 当前选中的考试索引
   const [currentExamIndex, setCurrentExamIndex] = useState<number>(0);
 
-  // 获取当前考试数据
   const currentExam = examHistory[currentExamIndex] || null;
 
-  // 持久化历史记录
   useEffect(() => {
     localStorage.setItem('examHistory', JSON.stringify(examHistory));
   }, [examHistory]);
 
-  // 分析完成的回调：添加/更新记录并切到报告页
   const handleAnalyzeComplete = (result: any) => {
-    // 构造新的考试记录
-    // 如果当前是在“新建”模式下（比如 currentExamIndex 指向一个空模板），则更新它
-    // 但简单起见，我们总是追加新的分析结果作为最新的一条，并选中它
-    // 或者：检查 result 是否包含 ID，如果有则更新，没有则新增
-    
     const newExam = {
       ...result,
       id: result.id || Date.now().toString(), // 确保有 ID
@@ -51,19 +41,17 @@ function App() {
       return newHistory;
     });
     
-    setCurrentExamIndex(0); // 选中最新的
+    setCurrentExamIndex(0);
     setActiveTab('report');
   };
 
-  // 切换考试
   const handleSwitchExam = (index: number) => {
     setCurrentExamIndex(index);
-    setActiveTab('analyze'); // 切换回概览页查看该考试
+    setActiveTab('analyze');
   };
 
   return (
     <div className="app-container">
-      {/* 页面内容区域 (根据 Tab 切换) */}
       <div className="page-wrapper">
         {activeTab === 'analyze' && (
           <Home 
@@ -75,9 +63,17 @@ function App() {
         )}
 
         {activeTab === 'report' && (
-          <Report 
-            data={currentExam} 
-            onBack={() => setActiveTab('analyze')} 
+          <Report
+            data={currentExam}
+            onBack={() => setActiveTab('analyze')}
+            onOpenPractice={() => setActiveTab('practice')}
+          />
+        )}
+
+        {activeTab === 'practice' && (
+          <PracticeSheet
+            data={currentExam}
+            onBack={() => setActiveTab('report')}
           />
         )}
       </div>

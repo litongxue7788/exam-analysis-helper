@@ -87,5 +87,24 @@ export interface AnalyzeExamResponse {
       score: number;
       full: number;
     }[];
+
+    // (可选) 学科
+    subject?: string;
+
+    // (可选) 巩固练习题列表
+    practiceQuestions?: string[];
+
+    // (可选) 结构化练习卷 (新版)
+    practicePaper?: {
+      title: string;
+      sections: {
+        name: string; // 大题名称，如“一、选择题”
+        questions: {
+          no: number;
+          content: string; // 题目文本
+          answer?: string; // 参考答案
+        }[];
+      }[];
+    };
   };
 }

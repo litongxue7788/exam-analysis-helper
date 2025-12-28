@@ -23,6 +23,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onTabChange }) 
           <PenLine size={18} />
           <span>分析</span>
         </button>
+        
         <button 
           className={`nav-item ${activeTab === 'report' ? 'active' : ''}`}
           onClick={() => onTabChange('report')}

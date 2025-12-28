@@ -1078,6 +1078,41 @@ body {
   color: #999;
 }
 
+/* =================================================================================
+   Practice Paper Styles
+   ================================================================================= */
+.practice-paper-view {
+  padding: 10px 0;
+}
+
+.paper-section {
+  margin-bottom: 24px;
+}
+
+.paper-section-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: #333;
+  margin-bottom: 12px;
+  border-left: 4px solid var(--primary);
+  padding-left: 8px;
+}
+
+.paper-question-item {
+  background: #f9f9f9;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid #eee;
+}
+
+.pq-content {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #333;
+  white-space: pre-wrap;
+}
+
 @keyframes loading-spin {
   from {
     transform: rotate(0deg);

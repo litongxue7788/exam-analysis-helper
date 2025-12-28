@@ -18,7 +18,7 @@ export interface LLMService {
    * 调用大模型进行图片分析 (多模态)
    * @param images 图片 Base64 数组
    * @param prompt 提示词
-   * @param config 动态配置 (API Key, Model ID)
+   * @param provider 使用的模型服务商
    */
-  generateImageAnalysis(images: string[], prompt: string, config: { apiKey: string, modelId: string, provider: string }): Promise<string>;
+  generateImageAnalysis(images: string[], prompt: string, provider: LLMProvider): Promise<string>;
 }

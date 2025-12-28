@@ -9,6 +9,28 @@ import { AnalyzeExamRequest, AnalyzeExamResponse } from '../types/api';
 import { SettingsModal } from '../components/SettingsModal';
 import { Dashboard } from '../components/Dashboard';
 
+const parseProblemTextToKnowledgeItem = (text: string, index: number) => {
+  const knowledgeMatch = text.match(/【知识点】([^【\n]+)/);
+  const reasonMatch = text.match(/【错因】([^【\n]+)/);
+  const name = knowledgeMatch && knowledgeMatch[1] ? knowledgeMatch[1].trim() : `问题${index + 1}`;
+  const descParts: string[] = [];
+  if (reasonMatch && reasonMatch[1]) {
+    descParts.push(`错因：${reasonMatch[1].trim()}`);
+  }
+  const cleaned = text
+    .replace(/【知识点】[^【\n]+/g, '')
+    .replace(/【错因】[^【\n]+/g, '')
+    .trim();
+  if (cleaned) {
+    descParts.push(cleaned);
+  }
+  return {
+    name,
+    rate: '重点关注',
+    desc: descParts.join('；')
+  };
+};
+
 interface HomeProps {
   onAnalyzeComplete: (result: any) => void;
   initialData?: any;
@@ -47,6 +69,11 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
     };
   });
 
+  const [trialAccessCode, setTrialAccessCode] = useState(() => {
+    const saved = localStorage.getItem('trialAccessCode');
+    return saved ? JSON.parse(saved) : '';
+  });
+
   // 仪表盘数据
   const [dashboardData, setDashboardData] = useState<{
     score: number;
@@ -76,6 +103,24 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
     const saved = localStorage.getItem('dashboardData');
     return saved ? JSON.parse(saved) : null;
   });
+
+  const buildPracticeQuestions = (
+    rawList: string[] | undefined,
+    weakest: string | undefined,
+    subject: string | undefined
+  ) => {
+    if (Array.isArray(rawList) && rawList.length > 0) {
+      return rawList;
+    }
+    const weakText = weakest || '错题相关';
+    const subj = subject || '本学科';
+    // 在表格导入等无法调用 AI 时，生成通用的学生练习指令，而非给老师的建议
+    return [
+      `【基础题】请针对“${weakText}”知识点，查找课本或笔记，抄写并背诵相关定义/公式/概念。`,
+      `【错题重做】请将本次考试中关于“${weakText}”的错题，在纠错本上重新抄写一遍并独立解答。`,
+      `【举一反三】请在练习册中寻找一道与“${weakText}”相关的习题（${subj}），完成并自我批改。`
+    ];
+  };
 
   // --- 监听 initialData 变化 (用于切换考试) ---
   React.useEffect(() => {
@@ -109,6 +154,10 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
   React.useEffect(() => {
     localStorage.setItem('llmConfig', JSON.stringify(llmConfig));
   }, [llmConfig]);
+
+  React.useEffect(() => {
+    localStorage.setItem('trialAccessCode', JSON.stringify(trialAccessCode));
+  }, [trialAccessCode]);
 
   React.useEffect(() => {
     if (dashboardData) {
@@ -304,14 +353,71 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
     });
   };
 
-  // 辅助：文件转 Base64
-  const fileToBase64 = (file: File): Promise<string> => {
+  const readFileAsDataURL = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);
       reader.onload = () => resolve(reader.result as string);
       reader.onerror = error => reject(error);
     });
+  };
+
+  const loadImageFromObjectUrl = (objectUrl: string): Promise<HTMLImageElement> => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('图片读取失败'));
+      img.src = objectUrl;
+    });
+  };
+
+  const compressImageToDataURL = async (file: File): Promise<string> => {
+    const shouldSkip =
+      file.size <= 700 * 1024 &&
+      (file.type === 'image/jpeg' || file.type === 'image/jpg');
+    if (shouldSkip) {
+      return readFileAsDataURL(file);
+    }
+
+    const maxEdge = 1600;
+    const quality = 0.78;
+    const outputType = 'image/jpeg';
+
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const img = await loadImageFromObjectUrl(objectUrl);
+
+      const srcW = img.naturalWidth || img.width;
+      const srcH = img.naturalHeight || img.height;
+      const maxDim = Math.max(srcW, srcH);
+      const scale = maxDim > maxEdge ? maxEdge / maxDim : 1;
+      const targetW = Math.max(1, Math.round(srcW * scale));
+      const targetH = Math.max(1, Math.round(srcH * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetW;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        return readFileAsDataURL(file);
+      }
+
+      ctx.drawImage(img, 0, 0, targetW, targetH);
+      const dataUrl = canvas.toDataURL(outputType, quality);
+      return dataUrl;
+    } catch {
+      return readFileAsDataURL(file);
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
+
+  // 辅助：文件转 Base64（手机端对图片做压缩，提升上传成功率）
+  const fileToBase64 = (file: File): Promise<string> => {
+    if (file.type.startsWith('image/')) {
+      return compressImageToDataURL(file);
+    }
+    return readFileAsDataURL(file);
   };
 
   // 执行分析并跳转 (生成个人分析报告)
@@ -331,20 +437,18 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         const base64Images = await Promise.all(imageFiles.map(f => fileToBase64(f)));
         
         // 2. 调用后端 API
-        // 注意：这里需要确保 llmConfig 已经有值，或者让后端使用默认值
         const payload = {
           images: base64Images,
-          config: {
-            provider: llmConfig.provider,
-            apiKey: llmConfig.apiKey,
-            modelId: llmConfig.modelId
-          }
+          provider: llmConfig.provider,
+          subject: studentInfo.subject, // Pass the selected subject
+          grade: studentInfo.grade, // Pass the grade for tone adjustment
         };
 
         const response = await fetch('/api/analyze-images', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
           },
           body: JSON.stringify(payload),
         });
@@ -362,6 +466,7 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
             : 100;
           const mergedStudentInfo = {
             ...studentInfo,
+            subject: result.data.subject || studentInfo.subject,
             examName: result.data.examName || studentInfo.examName
           };
 
@@ -377,6 +482,12 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
             weakestKnowledge: result.data.summary.weakestKnowledge
           };
 
+          const practiceQuestions = buildPracticeQuestions(
+            result.data.practiceQuestions,
+            result.data.summary.weakestKnowledge,
+            mergedStudentInfo.subject
+          );
+
           const reportData = {
             studentInfo: mergedStudentInfo,
             summary: summaryData,
@@ -386,18 +497,18 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
                 result.data.report.forStudent.overall,
                 ...result.data.report.forStudent.problems.slice(0, 1)
               ],
-              problems: result.data.report.forStudent.problems.map(p => ({
-                name: "知识点待提取",
-                rate: "0%", 
-                desc: p 
-              })),
+              problems: (result.data.report.forStudent.problems || []).map((p, idx) =>
+                parseProblemTextToKnowledgeItem(p, idx)
+              ),
               keyErrors: [],
               advice: {
                 content: result.data.report.forStudent.advice,
                 habit: result.data.report.forParent.guidance ? [result.data.report.forParent.guidance] : []
               }
             },
-            paperAppearance: result.data.paperAppearance
+            paperAppearance: result.data.paperAppearance,
+            practiceQuestions,
+            practicePaper: result.data.practicePaper // Pass the structured paper data
           };
 
           setDashboardData({
@@ -421,6 +532,12 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         // 场景 2: 如果是表格数据 (已有 dashboardData)
         // 这里可以直接使用 dashboardData 生成报告，或者再次调用后端进行深度分析
         // 为了演示，我们直接构造数据并跳转
+        const practiceQuestions = buildPracticeQuestions(
+            [],
+            dashboardData.weakestKnowledge,
+            studentInfo.subject
+        );
+
         const reportData = {
             studentInfo,
             summary: {
@@ -449,7 +566,8 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
                     content: dashboardData.suggestions || ["建议加强基础练习"],
                     habit: ["注意审题", "规范书写"]
                 }
-            }
+            },
+            practiceQuestions
         };
         onAnalyzeComplete(reportData);
       }
@@ -483,6 +601,8 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         onClose={() => setIsSettingsOpen(false)}
         studentInfo={studentInfo}
         onUpdateStudentInfo={setStudentInfo}
+        trialAccessCode={trialAccessCode}
+        onUpdateTrialAccessCode={setTrialAccessCode}
         llmConfig={llmConfig}
         onUpdateLlmConfig={setLlmConfig}
       />
@@ -682,6 +802,40 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
       {/* 2. 可滚动内容区 */}
       <div className="home-content">
         
+        {/* 0. 学科切换 */}
+        <div style={{ padding: '16px 20px 0 20px' }}>
+          <div style={{ 
+            background: '#fff', 
+            borderRadius: 12, 
+            padding: '12px 16px',
+            display: 'flex', 
+            alignItems: 'center',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.03)'
+          }}>
+            <span style={{ fontSize: 14, color: '#666', marginRight: 12 }}>当前学科:</span>
+            <div style={{ display: 'flex', gap: 8 }}>
+              {['数学', '语文', '英语'].map(subj => (
+                <button
+                  key={subj}
+                  onClick={() => setStudentInfo({ ...studentInfo, subject: subj })}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: 20,
+                    fontSize: 13,
+                    border: studentInfo.subject === subj ? 'none' : '1px solid #eee',
+                    background: studentInfo.subject === subj ? '#1a73e8' : '#f5f5f5',
+                    color: studentInfo.subject === subj ? '#fff' : '#666',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s'
+                  }}
+                >
+                  {subj}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
         {/* 3. 数据入口区 */}
         <div className="section-title">本次考试数据录入</div>
         <div className="entry-card-container">

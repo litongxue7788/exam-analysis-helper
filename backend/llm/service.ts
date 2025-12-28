@@ -79,31 +79,29 @@ export class LLMServiceImpl implements LLMService {
     }
   }
 
-  /**
-   * 多模态图片分析
-   */
-  async generateImageAnalysis(images: string[], prompt: string, config: { apiKey: string, modelId: string, provider: string }): Promise<string> {
-    // 1. 确定 BaseURL
-    let baseURL = '';
-    if (config.provider === 'doubao') {
-      baseURL = 'https://ark.cn-beijing.volces.com/api/v3';
-    } else if (config.provider === 'aliyun') {
-       baseURL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
-    } else {
-        // 兜底使用默认配置中的 URL
-        baseURL = this.configs[config.provider as LLMProvider]?.baseURL || '';
+  getProviderConfig(provider: LLMProvider): ProviderConfig {
+    return this.configs[provider];
+  }
+
+  setProviderConfig(provider: LLMProvider, config: Partial<ProviderConfig>): void {
+    this.configs[provider] = {
+      ...this.configs[provider],
+      ...config,
+    };
+  }
+
+  async generateImageAnalysis(images: string[], prompt: string, provider: LLMProvider): Promise<string> {
+    const cfg = this.configs[provider];
+
+    if (!cfg.apiKey) {
+      throw new Error(`未配置 ${provider} 的 API Key，请检查 .env 文件`);
     }
 
-    if (!config.apiKey || !config.modelId) {
-        throw new Error('未提供有效的 API Key 或 Model ID');
-    }
+    console.log(`🚀 [LLM Vision] 正在调用: ${provider} | Model: ${cfg.model}`);
 
-    console.log(`🚀 [LLM Vision] 正在调用: ${config.provider} | Model: ${config.modelId}`);
-
-    // 2. 初始化客户端
     const client = new OpenAI({
-      apiKey: config.apiKey,
-      baseURL: baseURL,
+      apiKey: cfg.apiKey,
+      baseURL: cfg.baseURL,
     });
 
     // 3. 构造多模态消息
@@ -122,7 +120,7 @@ export class LLMServiceImpl implements LLMService {
 
     try {
       const response = await client.chat.completions.create({
-        model: config.modelId,
+        model: cfg.model,
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: contentParts }
@@ -135,7 +133,7 @@ export class LLMServiceImpl implements LLMService {
 
     } catch (error: any) {
       console.error(`❌ [LLM Vision] 调用失败:`, error.message);
-      throw new Error(`${config.provider} Vision 调用失败: ${error.message}`);
+      throw new Error(`${provider} Vision 调用失败: ${error.message}`);
     }
   }
 }
