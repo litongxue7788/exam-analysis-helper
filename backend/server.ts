@@ -45,6 +45,15 @@ loadLlmConfigFromFile();
 app.use(cors()); // 允许跨域
 app.use(bodyParser.json({ limit: '50mb' })); // 支持大 JSON (图片 Base64)
 
+app.use((err: any, req: any, res: any, next: any) => {
+  const isSyntaxError = err instanceof SyntaxError;
+  const hasBody = err && typeof err === 'object' && 'body' in err;
+  if (isSyntaxError && hasBody) {
+    return res.status(400).json({ success: false, errorMessage: '请求体不是合法 JSON' });
+  }
+  return next(err);
+});
+
 const rateBuckets = new Map<string, number[]>();
 const dailyCounts = new Map<string, number>();
 let currentDay = new Date().toISOString().slice(0, 10);
@@ -185,8 +194,33 @@ app.post('/api/admin/llm-config', (req, res) => {
 app.post('/api/analyze-exam', async (req, res) => {
   try {
     const data = req.body as AnalyzeExamRequest;
-    
-    console.log(`\n📨 收到分析请求: ${data.student.name} - ${data.exam.subject}`);
+
+    if (
+      !data ||
+      !data.student ||
+      !data.exam ||
+      !data.score ||
+      !data.questions ||
+      !Array.isArray(data.questions) ||
+      !data.classStats ||
+      !data.modelProvider
+    ) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '请求体缺少必要字段（student/exam/score/questions/classStats/modelProvider）',
+      });
+    }
+
+    const studentName = String((data as any).student?.name || '').trim();
+    const subjectName = String((data as any).exam?.subject || '').trim();
+    if (!studentName || !subjectName) {
+      return res.status(400).json({
+        success: false,
+        errorMessage: '请求体字段不完整（student.name / exam.subject）',
+      });
+    }
+
+    console.log(`\n📨 收到分析请求: ${studentName} - ${subjectName}`);
 
     // --- Step A: 构造 Prompt (复用之前的逻辑) ---
     // 构造题目详情字符串
@@ -232,19 +266,30 @@ app.post('/api/analyze-exam', async (req, res) => {
       console.error('❌ 大模型调用或解析失败:', llmError);
       // 降级处理：如果失败，返回一个兜底的错误报告
       reportJson = {
-        studentView: {
-          overallComment: "系统暂时无法连接智能分析服务，请检查 API 配置。",
+        forStudent: {
+          overall: "系统暂时无法连接智能分析服务，请检查 API 配置。",
           problems: ["调用失败"],
           advice: ["请联系管理员"]
         },
         forParent: {
           summary: "分析服务暂时不可用。",
           guidance: "请稍后重试。"
-        }
+        },
+        studentView: {
+          overallComment: "系统暂时无法连接智能分析服务，请检查 API 配置。",
+          problems: ["调用失败"],
+          advice: ["请联系管理员"]
+        },
+        parentView: {
+          summary: "分析服务暂时不可用。",
+          guidance: "请稍后重试。"
+        },
       };
     }
 
     // --- Step C: 构造响应 ---
+    const normalizedForStudent = reportJson.forStudent || reportJson.studentView || {};
+    const normalizedForParent = reportJson.forParent || reportJson.parentView || {};
     const response: AnalyzeExamResponse = {
       success: true,
       data: {
@@ -257,17 +302,17 @@ app.post('/api/analyze-exam', async (req, res) => {
         },
         report: {
           forStudent: {
-            overall: reportJson.studentView?.overallComment || '解析异常',
-            problems: reportJson.studentView?.problems || [],
-            advice: reportJson.studentView?.studyPlan || reportJson.studentView?.advice || []
+            overall: normalizedForStudent.overall || normalizedForStudent.overallComment || '解析异常',
+            problems: normalizedForStudent.problems || [],
+            advice: normalizedForStudent.advice || normalizedForStudent.studyPlan || []
           },
           forParent: {
-            summary: reportJson.parentView?.summary || '解析异常',
-            guidance: reportJson.parentView?.homeSupportAdvice || reportJson.parentView?.guidance || ''
+            summary: normalizedForParent.summary || '解析异常',
+            guidance: normalizedForParent.guidance || normalizedForParent.homeSupportAdvice || ''
           }
         },
         rawLlmOutput: JSON.stringify(reportJson),
-        practiceQuestions: reportJson.practiceQuestions || reportJson.studentView?.practiceQuestions || [],
+        practiceQuestions: reportJson.practiceQuestions || normalizedForStudent.practiceQuestions || [],
         practicePaper: reportJson.practicePaper
       }
     };
