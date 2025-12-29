@@ -12,5 +12,7 @@ config/llm.json
 # Local guides that contain access codes
 试点授权口令操作指南.txt
 
-# Internal notes that may contain passwords
-明天教师测试指导指南-试卷分析助手.md
+# Local deploy outputs
+deploy/
+*.zip
+*.tgz
