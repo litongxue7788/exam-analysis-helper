@@ -15,6 +15,57 @@ const app = express();
 const PORT = 3002;
 const LLM_CONFIG_PATH = path.resolve(__dirname, '../config/llm.json');
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+    promise
+      .then((v) => {
+        clearTimeout(timer);
+        resolve(v);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+function extractJsonCandidate(rawContent: string): string {
+  const cleaned = String(rawContent || '')
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  const firstObj = cleaned.indexOf('{');
+  const firstArr = cleaned.indexOf('[');
+  const starts: number[] = [];
+  if (firstObj >= 0) starts.push(firstObj);
+  if (firstArr >= 0) starts.push(firstArr);
+  const start = starts.length ? Math.min(...starts) : -1;
+  if (start < 0) return cleaned;
+
+  const endObj = cleaned.lastIndexOf('}');
+  const endArr = cleaned.lastIndexOf(']');
+  const ends: number[] = [];
+  if (endObj >= 0) ends.push(endObj);
+  if (endArr >= 0) ends.push(endArr);
+  const end = ends.length ? Math.max(...ends) : -1;
+  if (end < start) return cleaned;
+
+  return cleaned.slice(start, end + 1).trim();
+}
+
+function parseLlmJson(rawContent: string): { ok: true; value: any; usedText: string } | { ok: false; error: Error; usedText: string } {
+  const candidate = extractJsonCandidate(rawContent);
+  try {
+    return { ok: true, value: JSON.parse(candidate), usedText: candidate };
+  } catch (e: any) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    return { ok: false, error: err, usedText: candidate };
+  }
+}
+
 function loadLlmConfigFromFile() {
   try {
     if (!fs.existsSync(LLM_CONFIG_PATH)) return;
@@ -50,6 +101,9 @@ app.use((err: any, req: any, res: any, next: any) => {
   const hasBody = err && typeof err === 'object' && 'body' in err;
   if (isSyntaxError && hasBody) {
     return res.status(400).json({ success: false, errorMessage: '请求体不是合法 JSON' });
+  }
+  if (err && typeof err === 'object' && (err.type === 'entity.too.large' || err.status === 413)) {
+    return res.status(413).json({ success: false, errorMessage: '请求体过大，请减少图片数量或压缩图片' });
   }
   return next(err);
 });
@@ -254,13 +308,20 @@ app.post('/api/analyze-exam', async (req, res) => {
     let reportJson: any;
     try {
       // 1. 发起调用
-      const rawContent = await llmService.generateAnalysis(prompt, data.modelProvider);
+      const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 0);
+      const rawContent = await withTimeout(
+        llmService.generateAnalysis(prompt, data.modelProvider),
+        timeoutMs,
+        '大模型调用超时'
+      );
       console.log('✅ 大模型返回原始内容长度:', rawContent.length);
 
       // 2. 尝试解析 JSON
-      // 有时候大模型会返回 ```json ... ```，需要清理一下
-      const jsonStr = rawContent.replace(/```json/g, '').replace(/```/g, '').trim();
-      reportJson = JSON.parse(jsonStr);
+      const parsed = parseLlmJson(rawContent);
+      if (!parsed.ok) {
+        throw parsed.error;
+      }
+      reportJson = parsed.value;
 
     } catch (llmError: any) {
       console.error('❌ 大模型调用或解析失败:', llmError);
@@ -418,11 +479,48 @@ ${subject ? getSubjectPracticeInstruction(subject) : `
 
     let reportJson: any;
     try {
-      const rawContent = await llmService.generateImageAnalysis(images, visionPrompt, visionProvider as any);
+      const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 0);
+      const rawContent = await withTimeout(
+        llmService.generateImageAnalysis(images, visionPrompt, visionProvider as any),
+        timeoutMs,
+        '图片分析调用超时'
+      );
       console.log('✅ Vision 模型返回长度:', rawContent.length);
 
-      const jsonStr = rawContent.replace(/```json/g, '').replace(/```/g, '').trim();
-      reportJson = JSON.parse(jsonStr);
+      let parsed = parseLlmJson(rawContent);
+      if (!parsed.ok) {
+        const repairPrompt = `
+你刚才的输出不是合法 JSON。请把下面内容转换为“严格合法 JSON”，只输出 JSON 本体，不要解释，不要 Markdown 代码块。
+
+必须满足结构：
+- meta.examName (string)
+- meta.subject (string)
+- meta.score (number)
+- meta.fullScore (number)
+- meta.typeAnalysis (array of {type, score, full})
+- meta.paperAppearance (object)
+- forStudent.overall (string)
+- forStudent.problems (string[])
+- forStudent.advice (string[])
+- forParent (object，可为空)
+- practicePaper (object，可为空)
+
+原始输出如下：
+${rawContent}
+`.trim();
+
+        const repaired = await withTimeout(
+          llmService.generateAnalysis(repairPrompt, visionProvider as any),
+          timeoutMs,
+          '图片分析结果修复超时'
+        );
+        parsed = parseLlmJson(repaired);
+      }
+
+      if (!parsed.ok) {
+        throw parsed.error;
+      }
+      reportJson = parsed.value;
 
     } catch (err: any) {
       console.error('❌ Vision 分析失败:', err);
