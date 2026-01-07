@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
-import { LLMProvider, LLMService } from './interface'; // 引用类型定义
+import { LLMProvider, LLMService, LlmCallOptions } from './interface'; // 引用类型定义
 import { SYSTEM_PROMPT } from './prompts';
 
 // 加载 .env 环境变量
@@ -40,8 +40,9 @@ export class LLMServiceImpl implements LLMService {
   /**
    * 核心生成方法
    */
-  async generateAnalysis(prompt: string, provider: LLMProvider): Promise<string> {
+  async generateAnalysis(prompt: string, provider: LLMProvider, options?: LlmCallOptions): Promise<string> {
     const config = this.configs[provider];
+    const temperature = Number.isFinite(options?.temperature) ? Number(options?.temperature) : 0.7;
 
     // 检查配置是否完整
     if (!config.apiKey) {
@@ -66,7 +67,7 @@ export class LLMServiceImpl implements LLMService {
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: prompt }
         ],
-        temperature: 0.7, // 稍微有点创造力，但不要太发散
+        temperature,
       });
 
       const content = response.choices[0]?.message?.content || '';
@@ -90,8 +91,9 @@ export class LLMServiceImpl implements LLMService {
     };
   }
 
-  async generateImageAnalysis(images: string[], prompt: string, provider: LLMProvider): Promise<string> {
+  async generateImageAnalysis(images: string[], prompt: string, provider: LLMProvider, options?: LlmCallOptions): Promise<string> {
     const cfg = this.configs[provider];
+    const temperature = Number.isFinite(options?.temperature) ? Number(options?.temperature) : 0.7;
 
     if (!cfg.apiKey) {
       throw new Error(`未配置 ${provider} 的 API Key，请检查 .env 文件`);
@@ -125,7 +127,7 @@ export class LLMServiceImpl implements LLMService {
           { role: 'system', content: SYSTEM_PROMPT },
           { role: 'user', content: contentParts }
         ],
-        temperature: 0.7,
+        temperature,
       });
 
       const content = response.choices[0]?.message?.content || '';

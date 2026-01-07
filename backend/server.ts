@@ -1,8 +1,10 @@
 import express from 'express';
+import type { Response } from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { AnalyzeExamRequest, AnalyzeExamResponse } from './api/interface';
 import { USER_PROMPT_TEMPLATE, getGradeLevelInstruction, getSubjectPracticeInstruction, getSubjectAnalysisInstruction } from './llm/prompts';
 import { llmService } from './llm/service';
@@ -67,13 +69,611 @@ function extractJsonCandidate(rawContent: string): string {
   return cleaned.slice(start, end + 1).trim();
 }
 
+function coerceJsonCandidate(raw: string): string {
+  let s = String(raw || '').trim();
+  s = s.replace(/\uFEFF/g, '');
+  s = s.replace(/,\s*([}\]])/g, '$1');
+  s = s.replace(/([{,]\s*)([A-Za-z0-9_\u00A0-\uFFFF-]+)\s*:/gu, (match, prefix, key) => {
+    const k = String(key || '').trim();
+    if (!k) return match;
+    return `${prefix}"${k.replace(/"/g, '\\"')}":`;
+  });
+  s = s.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, inner) => {
+    const v = String(inner || '').replace(/"/g, '\\"');
+    return `"${v}"`;
+  });
+  return s;
+}
+
 function parseLlmJson(rawContent: string): { ok: true; value: any; usedText: string } | { ok: false; error: Error; usedText: string } {
   const candidate = extractJsonCandidate(rawContent);
   try {
     return { ok: true, value: JSON.parse(candidate), usedText: candidate };
   } catch (e: any) {
-    const err = e instanceof Error ? e : new Error(String(e));
-    return { ok: false, error: err, usedText: candidate };
+    try {
+      const coerced = coerceJsonCandidate(candidate);
+      return { ok: true, value: JSON.parse(coerced), usedText: coerced };
+    } catch (e2: any) {
+      const err = e2 instanceof Error ? e2 : new Error(String(e2));
+      return { ok: false, error: err, usedText: candidate };
+    }
+  }
+}
+
+type ImageAnalyzeJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'canceled';
+type ImageAnalyzeJobStage = 'queued' | 'analyzing' | 'generating' | 'completed' | 'failed' | 'canceled';
+
+type ImageAnalyzeJobEvent =
+  | {
+      type: 'snapshot';
+      job: {
+        id: string;
+        status: ImageAnalyzeJobStatus;
+        stage: ImageAnalyzeJobStage;
+        createdAt: number;
+        updatedAt: number;
+        errorMessage?: string;
+        imageCount?: number;
+        estimateSeconds?: number;
+      };
+    }
+  | { type: 'progress'; stage: ImageAnalyzeJobStage; message?: string; provider?: string; at: number }
+  | { type: 'result'; result: AnalyzeExamResponse; at: number }
+  | { type: 'error'; stage: 'failed'; errorMessage: string; at: number };
+
+type ImageAnalyzeJobBufferedEvent = {
+  id: number;
+  data: ImageAnalyzeJobEvent;
+};
+
+type ImageAnalyzeJobRequest = {
+  images: string[];
+  provider?: 'doubao' | 'aliyun' | 'zhipu';
+  subject?: string;
+  grade?: string;
+};
+
+type ImageAnalyzeJobRecord = {
+  id: string;
+  status: ImageAnalyzeJobStatus;
+  stage: ImageAnalyzeJobStage;
+  createdAt: number;
+  updatedAt: number;
+  request: ImageAnalyzeJobRequest;
+  imageCount: number;
+  estimateSeconds: number;
+  result?: AnalyzeExamResponse;
+  errorMessage?: string;
+  events?: ImageAnalyzeJobBufferedEvent[];
+  nextEventId?: number;
+};
+
+const imageAnalyzeJobs = new Map<string, ImageAnalyzeJobRecord>();
+const imageAnalyzeJobStreams = new Map<string, Set<Response>>();
+const imageAnalyzeJobQueue: string[] = [];
+let imageAnalyzeJobRunningCount = 0;
+
+function getMaxConcurrentJobs(): number {
+  const v = Number(process.env.MAX_CONCURRENT_IMAGE_JOBS || process.env.MAX_CONCURRENT_JOBS || 2);
+  if (!Number.isFinite(v) || v <= 0) return 1;
+  return Math.min(8, Math.max(1, Math.floor(v)));
+}
+
+function getJobTtlMs(): number {
+  const v = Number(process.env.JOB_TTL_MS || process.env.IMAGE_JOB_TTL_MS || 2 * 60 * 60 * 1000);
+  if (!Number.isFinite(v) || v <= 0) return 2 * 60 * 60 * 1000;
+  return Math.min(24 * 60 * 60 * 1000, Math.max(5 * 60 * 1000, Math.floor(v)));
+}
+
+function getMaxJobsInMemory(): number {
+  const v = Number(process.env.MAX_JOBS_IN_MEMORY || 200);
+  if (!Number.isFinite(v) || v <= 0) return 200;
+  return Math.min(2000, Math.max(50, Math.floor(v)));
+}
+
+function getEventBufferSize(): number {
+  const v = Number(process.env.JOB_EVENT_BUFFER_SIZE || 40);
+  if (!Number.isFinite(v) || v <= 0) return 40;
+  return Math.min(200, Math.max(10, Math.floor(v)));
+}
+
+function estimateAnalyzeSeconds(imageCount: number): number {
+  const n = Math.max(0, Math.floor(Number(imageCount) || 0));
+  const base = 55;
+  const per = 45;
+  const secs = base + n * per;
+  return Math.max(45, Math.min(360, secs));
+}
+
+function writeSse(res: Response, payload: ImageAnalyzeJobEvent, id?: number) {
+  if (typeof id === 'number' && Number.isFinite(id) && id > 0) {
+    res.write(`id: ${Math.floor(id)}\n`);
+  }
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function broadcastSse(jobId: string, payload: ImageAnalyzeJobEvent) {
+  const job = imageAnalyzeJobs.get(jobId);
+  let bufferedId: number | undefined = undefined;
+  if (job) {
+    const nextId = Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, Math.floor(job.nextEventId || 1)));
+    job.nextEventId = nextId + 1;
+    bufferedId = nextId;
+    const bufSize = getEventBufferSize();
+    const prev = Array.isArray(job.events) ? job.events : [];
+    const next = [...prev, { id: bufferedId, data: payload }];
+    job.events = next.length > bufSize ? next.slice(next.length - bufSize) : next;
+  }
+  const set = imageAnalyzeJobStreams.get(jobId);
+  if (!set || set.size === 0) return;
+  for (const res of set) {
+    try {
+      writeSse(res, payload, bufferedId);
+    } catch {}
+  }
+}
+
+function trimJobsInMemory() {
+  const max = getMaxJobsInMemory();
+  if (imageAnalyzeJobs.size <= max) return;
+  const jobs = Array.from(imageAnalyzeJobs.values());
+  jobs.sort((a, b) => a.updatedAt - b.updatedAt);
+  const over = imageAnalyzeJobs.size - max;
+  let removed = 0;
+  for (const j of jobs) {
+    if (removed >= over) break;
+    if (j.status === 'running' || j.status === 'pending') continue;
+    imageAnalyzeJobs.delete(j.id);
+    imageAnalyzeJobStreams.delete(j.id);
+    removed += 1;
+  }
+}
+
+function cleanupExpiredJobs() {
+  const ttl = getJobTtlMs();
+  const now = Date.now();
+  for (const [id, job] of imageAnalyzeJobs.entries()) {
+    if (job.status === 'running' || job.status === 'pending') continue;
+    if (now - job.updatedAt > ttl) {
+      imageAnalyzeJobs.delete(id);
+      imageAnalyzeJobStreams.delete(id);
+    }
+  }
+  trimJobsInMemory();
+}
+
+setInterval(() => cleanupExpiredJobs(), 60_000);
+
+function pumpImageAnalyzeQueue() {
+  const limit = getMaxConcurrentJobs();
+  while (imageAnalyzeJobRunningCount < limit) {
+    const nextId = imageAnalyzeJobQueue.shift();
+    if (!nextId) break;
+    const job = imageAnalyzeJobs.get(nextId);
+    if (!job) continue;
+    if (job.status !== 'pending') continue;
+    imageAnalyzeJobRunningCount += 1;
+    runImageAnalyzeJob(nextId).finally(() => {
+      imageAnalyzeJobRunningCount = Math.max(0, imageAnalyzeJobRunningCount - 1);
+      pumpImageAnalyzeQueue();
+    });
+  }
+}
+
+function pickSecondaryProvider(primary: 'doubao' | 'aliyun' | 'zhipu'): 'doubao' | 'aliyun' | 'zhipu' {
+  const order: ('doubao' | 'aliyun' | 'zhipu')[] = ['doubao', 'aliyun', 'zhipu'];
+  const idx = order.indexOf(primary);
+  return order[(idx + 1) % order.length] || 'aliyun';
+}
+
+async function delay(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  await new Promise<void>((r) => setTimeout(r, ms));
+}
+
+async function callWithRetry<T>(fn: () => Promise<T>, retryCount: number, baseDelayMs: number): Promise<T> {
+  let lastErr: any = null;
+  for (let i = 0; i <= retryCount; i += 1) {
+    try {
+      return await fn();
+    } catch (e: any) {
+      lastErr = e;
+      if (i >= retryCount) break;
+      const wait = Math.max(0, baseDelayMs) * Math.pow(2, i);
+      await delay(wait);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+function validateVisionJson(value: any): { ok: true } | { ok: false; reason: string } {
+  if (!value || typeof value !== 'object') return { ok: false, reason: '输出不是对象' };
+  const meta = (value as any).meta;
+  const forStudent = (value as any).forStudent;
+  const studyMethods = (value as any).studyMethods;
+  if (!meta || typeof meta !== 'object') return { ok: false, reason: '缺少 meta' };
+  if (typeof meta.examName !== 'string') return { ok: false, reason: 'meta.examName 缺失' };
+  if (typeof meta.subject !== 'string') return { ok: false, reason: 'meta.subject 缺失' };
+  if (typeof meta.score !== 'number') return { ok: false, reason: 'meta.score 缺失' };
+  if (typeof meta.fullScore !== 'number') return { ok: false, reason: 'meta.fullScore 缺失' };
+  if (!forStudent || typeof forStudent !== 'object') return { ok: false, reason: '缺少 forStudent' };
+  if (typeof forStudent.overall !== 'string') return { ok: false, reason: 'forStudent.overall 缺失' };
+  if (!studyMethods || typeof studyMethods !== 'object') return { ok: false, reason: '缺少 studyMethods' };
+  return { ok: true };
+}
+
+async function analyzeImagesWithProvider(
+  req: ImageAnalyzeJobRequest,
+  visionPrompt: string,
+  visionProvider: 'doubao' | 'aliyun' | 'zhipu',
+  emit: (ev: ImageAnalyzeJobEvent) => void
+): Promise<any> {
+  const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 0);
+  const retryCount = Math.max(0, Number(process.env.LLM_RETRY_COUNT || 1));
+  const retryBaseDelayMs = Math.max(0, Number(process.env.LLM_RETRY_BASE_DELAY_MS || 800));
+
+  emit({ type: 'progress', stage: 'analyzing', provider: visionProvider, message: '开始解析图片', at: Date.now() });
+
+  const rawContent = await callWithRetry(
+    () =>
+      withTimeout(
+        llmService.generateImageAnalysis(req.images, visionPrompt, visionProvider as any, { temperature: 0.2 }),
+        timeoutMs,
+        '图片分析调用超时'
+      ),
+    retryCount,
+    retryBaseDelayMs
+  );
+
+  let parsed = parseLlmJson(rawContent);
+  if (!parsed.ok || validateVisionJson(parsed.value).ok === false) {
+    emit({ type: 'progress', stage: 'generating', provider: visionProvider, message: '修复结构化结果', at: Date.now() });
+    const repairPrompt = `
+你刚才的输出不是合法 JSON 或结构不完整。请把下面内容转换为“严格合法 JSON”，只输出 JSON 本体，不要解释，不要 Markdown 代码块。
+
+必须满足结构：
+- meta.examName (string)
+- meta.subject (string)
+- meta.score (number)
+- meta.fullScore (number)
+- meta.typeAnalysis (array of {type, score, full})
+- meta.paperAppearance (object)
+- forStudent.overall (string)
+- forStudent.problems (string[])
+- forStudent.advice (string[])
+- studyMethods.methods (string[])
+- studyMethods.weekPlan (string[])
+- forParent (object，可为空)
+- practicePaper (object，可为空)
+- review (object，可为空)
+- acceptanceQuiz (object，可为空)
+
+原始输出如下：
+${rawContent}
+`.trim();
+
+    const repaired = await callWithRetry(
+      () =>
+        withTimeout(
+          llmService.generateAnalysis(repairPrompt, visionProvider as any, { temperature: 0.1 }),
+          timeoutMs,
+          '图片分析结果修复超时'
+        ),
+      retryCount,
+      retryBaseDelayMs
+    );
+
+    parsed = parseLlmJson(repaired);
+  }
+
+  if (!parsed.ok) {
+    throw parsed.error;
+  }
+  const v = validateVisionJson(parsed.value);
+  if (!v.ok) {
+    throw new Error(`结果结构不完整: ${v.reason}`);
+  }
+  return parsed.value;
+}
+
+async function analyzeImagesWithHedge(
+  req: ImageAnalyzeJobRequest,
+  visionPrompt: string,
+  emit: (ev: ImageAnalyzeJobEvent) => void
+): Promise<{ reportJson: any; usedProvider: 'doubao' | 'aliyun' | 'zhipu' }> {
+  const primaryProvider = (req.provider as any) || (process.env.DEFAULT_PROVIDER as any) || 'doubao';
+  const envSecondary = String(process.env.HEDGE_SECONDARY_PROVIDER || '').trim();
+  const fallbackSecondary = pickSecondaryProvider(primaryProvider);
+  const secondaryProvider = (envSecondary as any) || fallbackSecondary;
+
+  const hedgeEnabled = String(process.env.HEDGE_ENABLED || '1').trim() !== '0';
+  const baseHedgeAfterMs = Math.max(0, Number(process.env.HEDGE_AFTER_MS || 3800));
+  const perImageMs = Math.max(0, Number(process.env.HEDGE_AFTER_MS_PER_IMAGE || 450));
+  const imgCount = Array.isArray(req.images) ? req.images.length : 0;
+  const hedgeAfterMs = Math.min(15000, Math.max(1500, baseHedgeAfterMs + imgCount * perImageMs));
+
+  const primaryCfg = llmService.getProviderConfig(primaryProvider);
+  const secondaryCfg = llmService.getProviderConfig(secondaryProvider);
+  const canPrimary = !!primaryCfg?.apiKey;
+  const canSecondary = !!secondaryCfg?.apiKey && secondaryProvider !== primaryProvider;
+
+  if (!canPrimary && !canSecondary) {
+    throw new Error('未配置可用的大模型服务商（API Key 缺失）');
+  }
+
+  const runProvider = async (p: 'doubao' | 'aliyun' | 'zhipu') => {
+    const reportJson = await analyzeImagesWithProvider(req, visionPrompt, p, emit);
+    return { reportJson, usedProvider: p as any };
+  };
+
+  let settled = false;
+  let primaryDone = false;
+  let secondaryStarted = false;
+  let primaryErr: any = null;
+  let secondaryErr: any = null;
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      startSecondary();
+    }, hedgeAfterMs);
+
+    const finalizeResolve = (v: any) => {
+      if (settled) return;
+      settled = true;
+      try {
+        clearTimeout(timer);
+      } catch {}
+      resolve(v);
+    };
+
+    const finalizeReject = (e: any) => {
+      if (settled) return;
+      settled = true;
+      try {
+        clearTimeout(timer);
+      } catch {}
+      reject(e);
+    };
+
+    const startSecondary = () => {
+      if (settled || secondaryStarted || !hedgeEnabled || !canSecondary) return;
+      secondaryStarted = true;
+      runProvider(secondaryProvider)
+        .then((v) => {
+          finalizeResolve(v);
+        })
+        .catch((e) => {
+          secondaryErr = e;
+          if (primaryDone) {
+            finalizeReject(primaryErr || secondaryErr);
+          }
+        });
+    };
+
+    if (canPrimary) {
+      runProvider(primaryProvider)
+        .then((v) => {
+          primaryDone = true;
+          finalizeResolve(v);
+        })
+        .catch((e) => {
+          primaryDone = true;
+          primaryErr = e;
+          startSecondary();
+          if (!canSecondary || !hedgeEnabled) {
+            finalizeReject(primaryErr);
+          }
+        });
+    } else {
+      primaryDone = true;
+      primaryErr = new Error(`未配置 ${primaryProvider} 的 API Key`);
+      startSecondary();
+      if (!canSecondary || !hedgeEnabled) {
+        finalizeReject(primaryErr);
+      }
+    }
+  });
+}
+
+async function runImageAnalyzeJob(jobId: string) {
+  const job = imageAnalyzeJobs.get(jobId);
+  if (!job) return;
+  if (job.status === 'canceled') return;
+
+  job.status = 'running';
+  job.stage = 'analyzing';
+  job.updatedAt = Date.now();
+  broadcastSse(jobId, {
+    type: 'snapshot',
+    job: {
+      id: job.id,
+      status: job.status,
+      stage: job.stage,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      imageCount: job.imageCount,
+      estimateSeconds: job.estimateSeconds,
+    },
+  });
+
+  const { images, subject, grade } = job.request;
+  const visionPrompt = `
+${subject ? `【重要提示】已知该试卷学科为：${subject}，请务必基于此学科视角进行分析。` : ''}
+${grade ? `【重要提示】学生年级为：${grade}，请参考此学段的认知水平进行评价。` : ''}
+
+请分析这些试卷图片，提取以下关键信息并按 JSON 格式输出。
+
+合规要求：
+- 严禁直接给出完整解题步骤或作文终稿（避免形成抄答案路径）。
+- 允许给“最小提示链”，但必须分三层：审题提示、思路提示、关键一步起始（不出现最终答案）。
+- 所有结论必须有证据；如果证据不足，必须标为低置信度并给出补拍/老师确认建议。
+
+1. 试卷名称：识别试卷顶部的标题（如“2023-2024学年三年级数学期末试卷”）。
+2. 学科：识别试卷学科（如 数学/语文/英语）。
+3. 总分与得分：识别学生总得分和试卷满分。
+4. 题型得分详情：分析各个大题（如“一、计算题”“二、填空题”“三、阅读理解”“四、作文”等）的得分情况。
+   - 需要提取：题型名称、该部分学生得分、该部分满分。
+5. 卷面观感：评价书写工整度。
+6. 分析报告：
+   - 整体评价（forStudent.overall）
+   - 存在问题（forStudent.problems 数组）
+     - 每条必须同时包含以下字段标签：【知识点】【题号】【得分】【错因】【证据】【置信度】【最短改法】
+     - 【题号】请标明对应题号或小题，如“3(2)”或“阅读-第2题”等，便于后续与原题定位。
+     - 【得分】请使用“本题得分/本题满分”的格式，例如“1/4”“0/2”，用于量化该错因关联题目的得分情况。
+   - 建议（forStudent.advice 数组，区分基础巩固、专项训练、习惯养成）
+
+${grade ? getGradeLevelInstruction(grade) : ''}
+${subject ? getSubjectAnalysisInstruction(subject) : ''}
+
+在分析“错因”和知识点时，请结合不同学科的特点：
+- 数学侧重区分：概念理解不到位、运算步骤不完整、审题不严、计算粗心、建模思路不清、逻辑表达不规范等。
+- 语文侧重区分：字词基础薄弱、文本主旨把握不准、信息筛选不全、文言词句理解不到位、作文立意偏题或表达不具体等。
+- 英语侧重区分：词汇量不足、时态语态混淆、句子结构错误、听力关键信息抓不住、阅读时只看单句不看上下文、写作中中式表达明显等。
+
+7. 练习卷生成逻辑（practicePaper）：
+${subject ? getSubjectPracticeInstruction(subject) : `
+   请依据上述分析得出的【整体评价】、【存在问题】和【建议】进行综合考量，生成一份高质量的针对性练习卷：
+   - 题目设计要直接针对识别出的“薄弱知识点”和“常见错因”。
+   - 试卷结构（Sections）应尽量还原原试卷的题型框架（如：一、选择题；二、填空题；三、解答题）。
+   - 确保题目具体、完整，不仅是描述题意，而是可直接让学生作答的真实题目（含具体数值、完整题干）。
+   - 难度适中，旨在帮助学生纠错和巩固。
+`}
+
+请严格按照以下 JSON 格式输出（不要包含 Markdown 代码块标记）：
+{
+  "meta": {
+    "examName": "试卷标题",
+    "subject": "数学",
+    "score": 85,
+    "fullScore": 100,
+    "typeAnalysis": [
+      { "type": "计算题", "score": 28, "full": 30 },
+      { "type": "填空题", "score": 18, "full": 20 }
+    ],
+    "paperAppearance": { "rating": "工整", "content": "书写认真..." }
+  },
+  "review": {
+    "required": false,
+    "reason": "",
+    "suggestions": []
+  },
+  "forStudent": {
+    "overall": "...",
+    "problems": [
+      "【知识点】一次函数图像【题号】3(2)【得分】0/2【错因】读图时忽略坐标含义【证据】第2小题坐标读取与图像不一致【置信度】中【最短改法】读图时先标出横纵轴含义并写出对应点坐标",
+      "【知识点】完形填空-语境猜词【题号】完形-第5空【得分】0/1【错因】只看单句不结合上下文【证据】错误选项与后文转折词but矛盾【置信度】中【最短改法】先圈转折/因果词，再回看上下文验证"
+    ],
+    "advice": [
+      "【基础巩固】回到教材例题和典型题，整理一次函数图像与代数式之间的对应关系。",
+      "【专项训练】每周至少完成2套阅读或完形训练，做完后用不同颜色标记审题关键词。",
+      "【习惯养成】做完题后用30秒回顾题干和答案，检查是否遗漏条件。"
+    ]
+  },
+  "studyMethods": {
+    "methods": ["更高效的做法（4-6条，短、可执行、与错因相关）"],
+    "weekPlan": ["接下来7天微计划（5-7条，按天/阶段拆分，含复盘与验收）"]
+  },
+  "forParent": { ... },
+  "practicePaper": {
+    "title": "针对性巩固练习卷",
+    "sections": [
+      {
+        "name": "一、基础巩固（选择题）",
+        "questions": [
+           { "no": 1, "content": "1. 题目文本...", "hints": ["审题提示...", "思路提示...", "关键一步起始..."] }
+        ]
+      }
+    ]
+  },
+  "acceptanceQuiz": {
+    "title": "验收小测",
+    "passRule": "3题全对",
+    "questions": [
+      { "no": 1, "content": "题目文本...", "hints": ["审题提示...", "思路提示...", "关键一步起始..."] }
+    ]
+  }
+}
+`;
+
+  const isCanceled = () => imageAnalyzeJobs.get(jobId)?.status === 'canceled';
+
+  const emit = (ev: ImageAnalyzeJobEvent) => {
+    if (isCanceled()) return;
+    broadcastSse(jobId, ev);
+  };
+
+  try {
+    const { reportJson } = await analyzeImagesWithHedge(job.request, visionPrompt, emit);
+    if (isCanceled()) {
+      return;
+    }
+    const meta = reportJson.meta || {};
+    const response: AnalyzeExamResponse = {
+      success: true,
+      data: {
+        summary: {
+          totalScore: meta.score || 0,
+          rank: 0,
+          beatPercentage: 0,
+          strongestKnowledge: '基于图像分析',
+          weakestKnowledge: '基于图像分析',
+        },
+        report: {
+          forStudent: reportJson.forStudent || {},
+          forParent: reportJson.forParent || {},
+        },
+        studyMethods: reportJson.studyMethods,
+        examName: meta.examName,
+        typeAnalysis: meta.typeAnalysis || [],
+        paperAppearance: meta.paperAppearance,
+        subject: meta.subject,
+        review: reportJson.review,
+        rawLlmOutput: JSON.stringify(reportJson),
+        practiceQuestions: reportJson.practiceQuestions || [],
+        practicePaper: reportJson.practicePaper,
+        acceptanceQuiz: reportJson.acceptanceQuiz,
+      },
+    };
+
+    job.result = response;
+    job.status = 'completed';
+    job.stage = 'completed';
+    job.updatedAt = Date.now();
+    broadcastSse(jobId, {
+      type: 'snapshot',
+      job: {
+        id: job.id,
+        status: job.status,
+        stage: job.stage,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        imageCount: job.imageCount,
+        estimateSeconds: job.estimateSeconds,
+      },
+    });
+    broadcastSse(jobId, { type: 'result', result: response, at: Date.now() });
+  } catch (e: any) {
+    const msg = String(e?.message || e || '未知错误');
+    if (!isCanceled()) {
+      job.status = 'failed';
+      job.stage = 'failed';
+      job.errorMessage = msg;
+      job.updatedAt = Date.now();
+      broadcastSse(jobId, {
+        type: 'snapshot',
+        job: {
+          id: job.id,
+          status: job.status,
+          stage: job.stage,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+          errorMessage: msg,
+          imageCount: job.imageCount,
+          estimateSeconds: job.estimateSeconds,
+        },
+      });
+      broadcastSse(jobId, { type: 'error', stage: 'failed', errorMessage: msg, at: Date.now() });
+    }
   }
 }
 
@@ -137,7 +737,7 @@ app.use((req, res, next) => {
   const requiredCodes = requiredRaw
     ? requiredRaw.split(',').map(s => s.trim()).filter(Boolean)
     : [];
-  const gotCode = String(req.headers['x-access-code'] || '').trim();
+  const gotCode = String(req.headers['x-access-code'] || (req.query as any)?.accessCode || '').trim();
 
   if (requiredCodes.length > 0 && !requiredCodes.includes(gotCode)) {
     return res.status(401).json({ success: false, errorMessage: '访问口令错误或缺失' });
@@ -332,7 +932,7 @@ app.post('/api/analyze-exam', async (req, res) => {
       // 1. 发起调用
       const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 0);
       const rawContent = await withTimeout(
-        llmService.generateAnalysis(prompt, data.modelProvider),
+        llmService.generateAnalysis(prompt, data.modelProvider, { temperature: 0.6 }),
         timeoutMs,
         '大模型调用超时'
       );
@@ -510,7 +1110,7 @@ app.post('/api/generate-practice', async (req, res) => {
     const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 0);
 
     const rawContent = await withTimeout(
-      llmService.generateAnalysis(prompt, modelProvider as any),
+      llmService.generateAnalysis(prompt, modelProvider as any, { temperature: 0.5 }),
       timeoutMs,
       '精准训练生成超时'
     );
@@ -522,7 +1122,7 @@ app.post('/api/generate-practice', async (req, res) => {
        console.warn('⚠️ JSON 解析失败，尝试修复...');
        const repairPrompt = `请修复以下 JSON，只输出 JSON 本体：\n${rawContent}`;
        const repaired = await withTimeout(
-         llmService.generateAnalysis(repairPrompt, modelProvider as any),
+         llmService.generateAnalysis(repairPrompt, modelProvider as any, { temperature: 0.1 }),
          timeoutMs,
          '修复超时'
        );
@@ -539,6 +1139,226 @@ app.post('/api/generate-practice', async (req, res) => {
     console.error('❌ 生成训练题失败:', error);
     res.status(500).json({ success: false, errorMessage: error.message });
   }
+});
+
+app.post('/api/analyze-images/jobs', async (req, res) => {
+  try {
+    const { images, provider, subject, grade } = req.body || {};
+    if (!images || !Array.isArray(images) || images.length === 0) {
+      return res.status(400).json({ success: false, errorMessage: '请上传至少一张图片' });
+    }
+
+    const id = (() => {
+      try {
+        return crypto.randomUUID();
+      } catch {
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      }
+    })();
+
+    const now = Date.now();
+    const imageCount = Array.isArray(images) ? images.length : 0;
+    const job: ImageAnalyzeJobRecord = {
+      id,
+      status: 'pending',
+      stage: 'queued',
+      createdAt: now,
+      updatedAt: now,
+      request: { images, provider, subject, grade },
+      imageCount,
+      estimateSeconds: estimateAnalyzeSeconds(imageCount),
+    };
+    imageAnalyzeJobs.set(id, job);
+    broadcastSse(id, {
+      type: 'snapshot',
+      job: {
+        id: job.id,
+        status: job.status,
+        stage: job.stage,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        imageCount: job.imageCount,
+        estimateSeconds: job.estimateSeconds,
+      },
+    });
+
+    imageAnalyzeJobQueue.push(id);
+    pumpImageAnalyzeQueue();
+
+    return res.json({ success: true, jobId: id });
+  } catch (e: any) {
+    console.error('❌ 创建图片分析作业失败:', e);
+    return res.status(500).json({ success: false, errorMessage: '服务器内部错误' });
+  }
+});
+
+app.post('/api/analyze-images/jobs/:jobId/cancel', (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  const job = imageAnalyzeJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, errorMessage: '作业不存在或已过期' });
+  }
+  if (job.status === 'completed') {
+    return res.status(400).json({ success: false, errorMessage: '作业已完成，无法取消' });
+  }
+  if (job.status === 'canceled') {
+    return res.json({ success: true });
+  }
+
+  job.status = 'canceled';
+  job.stage = 'canceled';
+  job.errorMessage = '已取消';
+  job.updatedAt = Date.now();
+
+  for (let i = imageAnalyzeJobQueue.length - 1; i >= 0; i -= 1) {
+    if (imageAnalyzeJobQueue[i] === jobId) imageAnalyzeJobQueue.splice(i, 1);
+  }
+
+  broadcastSse(jobId, {
+    type: 'snapshot',
+    job: {
+      id: job.id,
+      status: job.status,
+      stage: job.stage,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      errorMessage: job.errorMessage,
+      imageCount: job.imageCount,
+      estimateSeconds: job.estimateSeconds,
+    },
+  });
+  return res.json({ success: true });
+});
+
+app.post('/api/analyze-images/jobs/:jobId/retry', (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  const job = imageAnalyzeJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, errorMessage: '作业不存在或已过期' });
+  }
+  if (job.status === 'running' || job.status === 'pending') {
+    return res.status(400).json({ success: false, errorMessage: '作业正在进行中，无法重试' });
+  }
+
+  job.status = 'pending';
+  job.stage = 'queued';
+  job.errorMessage = undefined;
+  job.result = undefined;
+  job.events = [];
+  job.updatedAt = Date.now();
+
+  for (let i = imageAnalyzeJobQueue.length - 1; i >= 0; i -= 1) {
+    if (imageAnalyzeJobQueue[i] === jobId) imageAnalyzeJobQueue.splice(i, 1);
+  }
+
+  broadcastSse(jobId, {
+    type: 'snapshot',
+    job: {
+      id: job.id,
+      status: job.status,
+      stage: job.stage,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      imageCount: job.imageCount,
+      estimateSeconds: job.estimateSeconds,
+    },
+  });
+
+  imageAnalyzeJobQueue.push(jobId);
+  pumpImageAnalyzeQueue();
+
+  return res.json({ success: true });
+});
+
+app.get('/api/analyze-images/jobs/:jobId', (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  const job = imageAnalyzeJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, errorMessage: '作业不存在或已过期' });
+  }
+
+  const includeResult = String((req.query as any)?.includeResult || '').trim() === '1';
+  return res.json({
+    success: true,
+    job: {
+      id: job.id,
+      status: job.status,
+      stage: job.stage,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      errorMessage: job.errorMessage,
+      imageCount: job.imageCount,
+      estimateSeconds: job.estimateSeconds,
+    },
+    ...(includeResult && job.result ? { result: job.result } : {}),
+  });
+});
+
+app.get('/api/analyze-images/jobs/:jobId/events', (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  const job = imageAnalyzeJobs.get(jobId);
+  if (!job) {
+    return res.status(404).json({ success: false, errorMessage: '作业不存在或已过期' });
+  }
+
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  (res as any).flushHeaders?.();
+  try {
+    res.write('retry: 3000\n\n');
+  } catch {}
+
+  const set = imageAnalyzeJobStreams.get(jobId) || new Set<Response>();
+  set.add(res);
+  imageAnalyzeJobStreams.set(jobId, set);
+
+  const lastIdRaw = String(req.headers['last-event-id'] || (req.query as any)?.lastEventId || '').trim();
+  const lastId = Number(lastIdRaw);
+  const lastEventId = Number.isFinite(lastId) && lastId > 0 ? Math.floor(lastId) : 0;
+
+  const buffered = Array.isArray(job.events) ? job.events : [];
+  const toSend = lastEventId > 0 ? buffered.filter((x) => x.id > lastEventId) : buffered;
+  if (toSend.length > 0) {
+    for (const ev of toSend) {
+      try {
+        writeSse(res, ev.data, ev.id);
+      } catch {}
+    }
+  } else {
+    writeSse(res, {
+      type: 'snapshot',
+      job: {
+        id: job.id,
+        status: job.status,
+        stage: job.stage,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        errorMessage: job.errorMessage,
+        imageCount: job.imageCount,
+        estimateSeconds: job.estimateSeconds,
+      },
+    });
+    if (job.result) {
+      writeSse(res, { type: 'result', result: job.result, at: Date.now() });
+    }
+  }
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(`: ping\n\n`);
+    } catch {}
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    const s = imageAnalyzeJobStreams.get(jobId);
+    if (s) {
+      s.delete(res);
+      if (s.size === 0) imageAnalyzeJobStreams.delete(jobId);
+    }
+  });
 });
 
 // 2.5 图片分析接口
@@ -657,7 +1477,7 @@ ${subject ? getSubjectPracticeInstruction(subject) : `
     try {
       const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 0);
       const rawContent = await withTimeout(
-        llmService.generateImageAnalysis(images, visionPrompt, visionProvider as any),
+        llmService.generateImageAnalysis(images, visionPrompt, visionProvider as any, { temperature: 0.2 }),
         timeoutMs,
         '图片分析调用超时'
       );
@@ -690,7 +1510,7 @@ ${rawContent}
 `.trim();
 
         const repaired = await withTimeout(
-          llmService.generateAnalysis(repairPrompt, visionProvider as any),
+          llmService.generateAnalysis(repairPrompt, visionProvider as any, { temperature: 0.1 }),
           timeoutMs,
           '图片分析结果修复超时'
         );

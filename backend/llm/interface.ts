@@ -5,6 +5,10 @@
 // 1. LLM 服务商类型
 export type LLMProvider = 'doubao' | 'aliyun' | 'zhipu';
 
+export interface LlmCallOptions {
+  temperature?: number;
+}
+
 // 2. 统一的 LLM 调用接口
 export interface LLMService {
   /**
@@ -12,7 +16,7 @@ export interface LLMService {
    * @param prompt 完整的提示词字符串
    * @param modelProvider 选择的模型提供商
    */
-  generateAnalysis(prompt: string, modelProvider: LLMProvider): Promise<string>;
+  generateAnalysis(prompt: string, modelProvider: LLMProvider, options?: LlmCallOptions): Promise<string>;
 
   /**
    * 调用大模型进行图片分析 (多模态)
@@ -20,5 +24,5 @@ export interface LLMService {
    * @param prompt 提示词
    * @param provider 使用的模型服务商
    */
-  generateImageAnalysis(images: string[], prompt: string, provider: LLMProvider): Promise<string>;
+  generateImageAnalysis(images: string[], prompt: string, provider: LLMProvider, options?: LlmCallOptions): Promise<string>;
 }
