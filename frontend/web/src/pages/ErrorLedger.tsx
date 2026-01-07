@@ -8,10 +8,10 @@ import { ErrorItem } from '../types/notebook';
 
 interface ErrorLedgerProps {
   onBack: () => void;
-  // 暂时传入 mock 数据或从 localStorage 读取
+  currentExam: any;
 }
 
-export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack }) => {
+export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam }) => {
   const [activeFilter, setActiveFilter] = useState<'all' | 'unsolved' | 'solved'>('unsolved');
   const [isDesktop, setIsDesktop] = useState(() => window.innerWidth >= 768);
   const [generatingId, setGeneratingId] = useState<string | null>(null);
@@ -66,35 +66,110 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack }) => {
     return () => window.removeEventListener('resize', onResize);
   }, []);
 
-  // Mock Data for visualization (Move to state for interactivity)
-  const [errors, setErrors] = useState<ErrorItem[]>([
-    {
-      id: '1',
-      sourceExamId: 'exam-001',
-      sourceExamName: '七年级上册数学期中考试',
-      createTime: '2023-11-15',
-      questionText: '已知 a, b 互为相反数，c, d 互为倒数，x 的绝对值是 2，求 x^2 - (a+b+cd)x + (a+b)^2023 + (-cd)^2024 的值。',
-      knowledgePoints: ['有理数运算', '代数式求值'],
-      errorType: 'calculation',
-      tags: ['#粗心', '#计算错误'],
-      masteryLevel: 30,
-      reviewCount: 1,
-      isResolved: false
-    },
-    {
-      id: '2',
-      sourceExamId: 'exam-001',
-      sourceExamName: '七年级上册数学期中考试',
-      createTime: '2023-11-15',
-      questionText: '如图，在数轴上点 A 表示的数是 -2，点 B 表示的数是 8，点 P 从点 A 出发...',
-      knowledgePoints: ['数轴动点问题', '一元一次方程'],
-      errorType: 'concept',
-      tags: ['#数形结合', '#难题'],
-      masteryLevel: 10,
-      reviewCount: 0,
-      isResolved: false
+  const studentInfo = currentExam?.studentInfo || {};
+  const subjectText = String(studentInfo?.subject || '数学');
+  const examName = String(studentInfo?.examName || currentExam?.meta?.examName || '本次考试');
+  const examId = String(currentExam?.id || currentExam?.job?.id || currentExam?.timestamp || examName || 'current');
+  const storageKey = `errorLedger:${encodeURIComponent(examId)}`;
+
+  const inferErrorType = (text: string) => {
+    const t = String(text || '');
+    if (/(粗心|计算|算错|运算)/.test(t)) return 'calculation' as const;
+    if (/(审题|阅读|题意|理解|信息筛选)/.test(t)) return 'reading' as const;
+    if (/(概念|定义|公式|定理|基础不牢)/.test(t)) return 'concept' as const;
+    if (/(应用|建模|情境|实际|综合)/.test(t)) return 'application' as const;
+    return 'other' as const;
+  };
+
+  const toErrorItemsFromExam = (exam: any): ErrorItem[] => {
+    const problems = Array.isArray(exam?.modules?.problems) ? exam.modules.problems : [];
+    const createdAt = (() => {
+      const ts = exam?.startTime || exam?.timestamp || Date.now();
+      const d = new Date(ts);
+      return Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+    })();
+
+    return problems.map((p: any, idx: number) => {
+      const name = String(p?.name || `问题${idx + 1}`).trim();
+      const desc = String(p?.desc || '').trim();
+      const id = `${examId}:${idx}:${encodeURIComponent(name || String(idx))}`;
+      const questionText = desc || name;
+      const errorType = inferErrorType(questionText);
+      return {
+        id,
+        sourceExamId: examId,
+        sourceExamName: examName,
+        createTime: createdAt,
+        questionText,
+        knowledgePoints: name ? [name] : [],
+        errorType,
+        tags: [],
+        masteryLevel: 20,
+        reviewCount: 0,
+        isResolved: false,
+      };
+    });
+  };
+
+  const mergeWithPersisted = (base: ErrorItem[], persisted: any): ErrorItem[] => {
+    const saved = Array.isArray(persisted) ? persisted : [];
+    const map = new Map<string, any>();
+    for (const item of saved) {
+      const id = String(item?.id || '').trim();
+      if (id) map.set(id, item);
     }
-  ]);
+    return base.map((b) => {
+      const s = map.get(b.id);
+      if (!s) return b;
+      return {
+        ...b,
+        tags: Array.isArray(s.tags) ? s.tags : b.tags,
+        masteryLevel: Number.isFinite(Number(s.masteryLevel)) ? Number(s.masteryLevel) : b.masteryLevel,
+        reviewCount: Number.isFinite(Number(s.reviewCount)) ? Number(s.reviewCount) : b.reviewCount,
+        lastReviewDate: typeof s.lastReviewDate === 'string' ? s.lastReviewDate : b.lastReviewDate,
+        isResolved: typeof s.isResolved === 'boolean' ? s.isResolved : b.isResolved,
+      };
+    });
+  };
+
+  const [errors, setErrors] = useState<ErrorItem[]>([]);
+
+  useEffect(() => {
+    const nextBase = toErrorItemsFromExam(currentExam);
+    try {
+      const savedRaw = localStorage.getItem(storageKey);
+      const saved = savedRaw ? JSON.parse(savedRaw) : null;
+      setErrors(mergeWithPersisted(nextBase, saved));
+    } catch {
+      setErrors(nextBase);
+    }
+  }, [currentExam, storageKey]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(errors));
+    } catch {}
+  }, [errors, storageKey]);
+
+  useEffect(() => {
+    const filter = localStorage.getItem('errorLedger:filter');
+    if (filter === 'solved' || filter === 'unsolved' || filter === 'all') {
+      setActiveFilter(filter);
+      localStorage.removeItem('errorLedger:filter');
+    }
+  }, []);
+
+  useEffect(() => {
+    const shouldPrint = localStorage.getItem('errorLedger:autoPrint');
+    if (shouldPrint !== '1') return;
+    if (!errors || errors.length === 0) return;
+    localStorage.removeItem('errorLedger:autoPrint');
+    window.setTimeout(() => handlePrint(), 200);
+  }, [errors]);
+
+  const filteredErrors = errors.filter((e) =>
+    activeFilter === 'all' ? true : activeFilter === 'unsolved' ? !e.isResolved : e.isResolved
+  );
 
   const handleGenerateSimilar = (errorId: string) => {
     if (generatingId) return;
@@ -159,7 +234,7 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack }) => {
           <div className="context-info">
             <div className="context-title">错题本 (Error Ledger)</div>
             <div className="context-meta">
-              <span>数学</span>
+              <span>{subjectText}</span>
               <span>•</span>
               <span>共 {errors.length} 题</span>
             </div>
@@ -205,7 +280,7 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack }) => {
            </div>
            
            <div className="error-list" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              {errors.map(item => (
+              {filteredErrors.map(item => (
                 <div key={item.id} className="knowledge-item" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
                       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -320,7 +395,7 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack }) => {
           </div>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: 30 }}>
-            {errors.filter(e => activeFilter === 'all' || (activeFilter === 'unsolved' ? !e.isResolved : e.isResolved)).map((item, index) => (
+            {filteredErrors.map((item, index) => (
               <div key={item.id} style={{ breakInside: 'avoid', border: '1px solid #eee', padding: 20, borderRadius: 8 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 15 }}>
                   <span style={{ fontWeight: 'bold', fontSize: 16 }}>题目 {index + 1}</span>

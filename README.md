@@ -45,6 +45,7 @@
 
 - **源码仓库**: [https://github.com/litongxue7788/exam-analysis-helper](https://github.com/litongxue7788/exam-analysis-helper)
 - **线上服务器**: 阿里云 ECS (实例 ID: `i-2ze430a8moubrvgp8nns`)
+- **线上访问**: http://123.56.45.212/
 - **开发代理**: 端口 `56751`
 
 ## 🛠 技术栈
@@ -57,7 +58,7 @@
 ## 🚀 快速开始
 
 ### 1. 环境准备
-- Node.js >= 16.0
+- Node.js >= 18.0
 - 有效的大模型 API Key (如豆包、阿里云 Qwen)
 
 ### 2. 后端启动
@@ -81,7 +82,11 @@ npm run dev
 ```
 
 ### 4. 访问
-打开浏览器访问 `http://localhost:5173` 即可开始使用。
+打开浏览器访问 `http://localhost:3000` 即可开始使用。
+
+说明：
+- 前端开发服务器默认端口为 3000，并将 `/api/*` 代理到 `http://localhost:3002`。
+- 线上环境通过 Nginx 托管前端静态文件，并反代 `/api/*` 到后端服务。
 
 ## 📅 开发计划 (Roadmap)
 

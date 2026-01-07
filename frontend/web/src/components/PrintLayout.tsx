@@ -19,6 +19,19 @@ export const PrintLayout: React.FC<PrintLayoutProps> = ({ data }) => {
   const problems = modules?.problems || [];
   const adviceContent = modules?.advice?.content || [];
   const adviceHabit = modules?.advice?.habit || [];
+  
+  const coerceText = (v: any): string => {
+    if (typeof v === 'string') return v;
+    if (v == null) return '';
+    if (typeof v === 'object') {
+      try {
+        return JSON.stringify(v);
+      } catch {
+        return String(v);
+      }
+    }
+    return String(v);
+  };
 
   return (
     <div className="print-layout">
@@ -52,10 +65,10 @@ export const PrintLayout: React.FC<PrintLayoutProps> = ({ data }) => {
         <div className="print-text">
             {Array.isArray(evaluation) ? (
                 <ul className="print-list">
-                    {evaluation.map((item: string, i: number) => <li key={i}>{item}</li>)}
+                    {evaluation.map((item: any, i: number) => <li key={i}>{coerceText(item)}</li>)}
                 </ul>
             ) : (
-                <p>{evaluation}</p>
+                <p>{coerceText(evaluation)}</p>
             )}
         </div>
       </div>
@@ -65,7 +78,7 @@ export const PrintLayout: React.FC<PrintLayoutProps> = ({ data }) => {
         <ul className="print-list">
           {problems.map((item: any, i: number) => (
             <li key={i}>
-                <strong>{item.name}</strong> (得分率: {item.rate}): {item.desc}
+                <strong>{coerceText(item?.name)}</strong> (得分率: {coerceText(item?.rate)}): {coerceText(item?.desc)}
             </li>
           ))}
         </ul>
@@ -77,7 +90,7 @@ export const PrintLayout: React.FC<PrintLayoutProps> = ({ data }) => {
             <h3>学习内容</h3>
             <ul className="print-list">
             {adviceContent.map((item: string, i: number) => (
-                <li key={i}>{item}</li>
+                <li key={i}>{coerceText(item)}</li>
             ))}
             </ul>
         </div>
@@ -86,7 +99,7 @@ export const PrintLayout: React.FC<PrintLayoutProps> = ({ data }) => {
                 <h3>习惯与方法</h3>
                 <ul className="print-list">
                 {adviceHabit.map((item: string, i: number) => (
-                    <li key={i}>{item}</li>
+                    <li key={i}>{coerceText(item)}</li>
                 ))}
                 </ul>
             </div>

@@ -2,7 +2,7 @@
 // 个人分析报告页 (Report) - 优化版 (Page 2)
 // =================================================================================
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Settings, Download, ArrowLeft, Share2, PanelRightClose, PanelRightOpen, GripHorizontal, BookOpen, LayoutDashboard, Calendar, X, Menu, ArrowRightLeft } from 'lucide-react';
 import { SettingsModal } from '../components/SettingsModal';
 import { PrintLayout } from '../components/PrintLayout';
@@ -104,6 +104,78 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
     return { bg: '#F5F5F5', color: '#666', border: '#eee' };
   };
 
+  const parseProblemTextToKnowledgeItem = (rawText: any, index: number) => {
+    const text = typeof rawText === 'string' ? rawText : JSON.stringify(rawText);
+    const knowledgeMatch = text.match(/【知识点】([^【\n]+)/);
+    const questionMatch = text.match(/【题号】([^【\n]+)/);
+    const scoreMatch = text.match(/【得分】([^【\n]+)/);
+    const reasonMatch = text.match(/【错因】([^【\n]+)/);
+    const evidenceMatch = text.match(/【证据】([^【\n]+)/);
+    const confidenceMatch = text.match(/【置信度】([^【\n]+)/);
+    const fixMatch = text.match(/【最短改法】([^【\n]+)/);
+    const name = knowledgeMatch && knowledgeMatch[1] ? knowledgeMatch[1].trim() : `问题${index + 1}`;
+    const descParts: string[] = [];
+    if (questionMatch && questionMatch[1]) {
+      descParts.push(`题号：${questionMatch[1].trim()}`);
+    } else if (evidenceMatch && evidenceMatch[1]) {
+      const evidence = evidenceMatch[1].trim();
+      const hits: string[] = [];
+      const re = /题\s*([0-9]+(?:\([0-9]+\))?)/g;
+      let m: RegExpExecArray | null = null;
+      while ((m = re.exec(evidence)) !== null) {
+        const v = String(m[1] || '').trim();
+        if (v) hits.push(v);
+      }
+      const uniq = Array.from(new Set(hits));
+      if (uniq.length > 0) descParts.push(`题号：${uniq.join('、')}`);
+    }
+    if (scoreMatch && scoreMatch[1]) {
+      descParts.push(`得分：${scoreMatch[1].trim()}`);
+    }
+    if (reasonMatch && reasonMatch[1]) {
+      descParts.push(`错因：${reasonMatch[1].trim()}`);
+    }
+    if (evidenceMatch && evidenceMatch[1]) {
+      descParts.push(`证据：${evidenceMatch[1].trim()}`);
+    }
+    if (confidenceMatch && confidenceMatch[1]) {
+      descParts.push(`置信度：${confidenceMatch[1].trim()}`);
+    }
+    if (fixMatch && fixMatch[1]) {
+      descParts.push(`最短改法：${fixMatch[1].trim()}`);
+    }
+    const cleaned = text
+      .replace(/【知识点】[^【\n]+/g, '')
+      .replace(/【题号】[^【\n]+/g, '')
+      .replace(/【得分】[^【\n]+/g, '')
+      .replace(/【错因】[^【\n]+/g, '')
+      .replace(/【证据】[^【\n]+/g, '')
+      .replace(/【置信度】[^【\n]+/g, '')
+      .replace(/【最短改法】[^【\n]+/g, '')
+      .trim();
+    if (cleaned) {
+      descParts.push(cleaned);
+    }
+    return {
+      name,
+      rate: '重点关注',
+      desc: descParts.join('；'),
+    };
+  };
+
+  const buildPracticeQuestions = (rawList: string[] | undefined, weakest: string | undefined, subject: string | undefined) => {
+    if (Array.isArray(rawList) && rawList.length > 0) {
+      return rawList;
+    }
+    const weakText = weakest || '错题相关';
+    const subj = subject || '本学科';
+    return [
+      `【基础题】请针对“${weakText}”知识点，查找课本或笔记，抄写并背诵相关定义/公式/概念。`,
+      `【错题重做】请将本次考试中关于“${weakText}”的错题，在纠错本上重新抄写一遍并独立解答。`,
+      `【举一反三】请在练习册中寻找一道与“${weakText}”相关的习题（${subj}），完成并自我批改。`,
+    ];
+  };
+
   // 如果没有真实数据，使用默认结构防止崩溃，但尽量使用传入的 data
   // 假设 data 结构为 { studentInfo, summary, modules }
   const studentInfo = data?.studentInfo || {
@@ -202,6 +274,8 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   const [toastMsg, setToastMsg] = useState<string | null>(null); // Toast 状态
   const [activeStage, setActiveStage] = useState<'diagnosis' | 'training' | 'acceptance'>('diagnosis');
   const [generatingWeakPoint, setGeneratingWeakPoint] = useState<string | null>(null);
+  const [generatingAcceptance, setGeneratingAcceptance] = useState(false);
+  const [generatedAcceptanceQuiz, setGeneratedAcceptanceQuiz] = useState<any | null>(null);
   const [showIntro, setShowIntro] = useState(false);
   // 仅用于 SettingsModal 兼容
   const [llmConfig, setLlmConfig] = useState({ provider: 'doubao', apiKey: '', modelId: '' });
@@ -221,6 +295,349 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
     setTimeout(() => setToastMsg(null), 3000);
   };
 
+  const [planMode, setPlanMode] = useState<'normal' | '20min'>(() => (((data as any)?.planMode || '') === '20min' ? '20min' : 'normal'));
+  useEffect(() => {
+    const next = (((data as any)?.planMode || '') === '20min' ? '20min' : 'normal') as 'normal' | '20min';
+    setPlanMode(next);
+  }, [(data as any)?.planMode]);
+  const isPlanCompressed = planMode === '20min';
+
+  const [trialAccessCode, setTrialAccessCode] = useState(() => {
+    try {
+      const saved = localStorage.getItem('trialAccessCode');
+      const parsed = saved ? JSON.parse(saved) : '';
+      return typeof parsed === 'string' ? parsed : '';
+    } catch {
+      return '';
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('trialAccessCode', JSON.stringify(trialAccessCode));
+    } catch {}
+  }, [trialAccessCode]);
+
+  const jobId = String((data as any)?.job?.id || (data as any)?.jobId || '').trim();
+  const [jobImageCount, setJobImageCount] = useState<number>(() => Number((data as any)?.job?.imageCount || 0) || 0);
+  const [jobEstimateSeconds, setJobEstimateSeconds] = useState<number>(() => Number((data as any)?.job?.estimateSeconds || 0) || 0);
+  const estimateSeconds = useMemo(() => {
+    if (jobEstimateSeconds > 0) return jobEstimateSeconds;
+    const base = 55;
+    const per = 45;
+    const secs = base + jobImageCount * per;
+    return Math.max(45, Math.min(360, secs));
+  }, [jobEstimateSeconds, jobImageCount]);
+  const [jobStatus, setJobStatus] = useState<string>(() => String((data as any)?.job?.status || '').trim());
+  const [jobStage, setJobStage] = useState<string>(() => String((data as any)?.job?.stage || '').trim());
+  const [jobMessage, setJobMessage] = useState<string>('');
+  const [isPolling, setIsPolling] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const jobStatusRef = useRef(jobStatus);
+  useEffect(() => {
+    jobStatusRef.current = jobStatus;
+  }, [jobStatus]);
+
+  const applyAnalyzeResultToExam = useCallback(
+    (result: any) => {
+      const payload = result?.data;
+      if (!payload) return;
+
+      const typeAnalysis = payload.typeAnalysis || [];
+      const inferredFullScore =
+        Array.isArray(typeAnalysis) && typeAnalysis.length > 0
+          ? typeAnalysis.reduce((sum: number, item: any) => sum + (Number(item?.full || 0) || 0), 0)
+          : 100;
+
+      const mergedStudentInfo = {
+        ...(studentInfo || {}),
+        subject: payload.subject || (studentInfo as any)?.subject,
+        examName: payload.examName || (studentInfo as any)?.examName,
+      };
+
+      const summaryData = {
+        totalScore: payload.summary?.totalScore ?? 0,
+        fullScore: inferredFullScore || 100,
+        classAverage: (summary as any)?.classAverage ?? 79,
+        classRank: payload.summary?.rank ?? 0,
+        totalStudents: (summary as any)?.totalStudents ?? 50,
+        scoreChange: (summary as any)?.scoreChange ?? 0,
+        overview: payload.report?.forStudent?.overall ?? (summary as any)?.overview ?? '',
+        strongestKnowledge: payload.summary?.strongestKnowledge ?? '',
+        weakestKnowledge: payload.summary?.weakestKnowledge ?? '',
+      };
+
+      const practiceQuestions = buildPracticeQuestions(payload.practiceQuestions, payload.summary?.weakestKnowledge, mergedStudentInfo.subject);
+
+      const forParentGuidance = payload.report?.forParent?.guidance;
+      const habit = (() => {
+        const g = forParentGuidance;
+        if (!g) return [];
+        if (Array.isArray(g)) return g;
+        if (typeof g === 'string') return [g];
+        if (typeof g === 'object') {
+          if ((g as any)['习惯养成']) {
+            return Array.isArray((g as any)['习惯养成']) ? (g as any)['习惯养成'] : [String((g as any)['习惯养成'])];
+          }
+          return Object.values(g as any).flat().map(String);
+        }
+        return [];
+      })();
+
+      const nextExam = {
+        ...(data || {}),
+        studentInfo: mergedStudentInfo,
+        summary: summaryData,
+        typeAnalysis,
+        review: payload.review,
+        studyMethods: payload.studyMethods,
+        modules: {
+          evaluation: [
+            payload.report?.forStudent?.overall ?? '',
+            ...(Array.isArray(payload.report?.forStudent?.problems) ? payload.report.forStudent.problems.slice(0, 1) : []),
+          ]
+            .filter(Boolean)
+            .map((x: any) => {
+              if (typeof x === 'string') return x;
+              if (!x) return '';
+              if (typeof x === 'object') {
+                try {
+                  return JSON.stringify(x);
+                } catch {
+                  return String(x);
+                }
+              }
+              return String(x);
+            })
+            .filter(Boolean),
+          problems: (Array.isArray(payload.report?.forStudent?.problems) ? payload.report.forStudent.problems : []).map((p: any, idx: number) =>
+            parseProblemTextToKnowledgeItem(p, idx)
+          ),
+          keyErrors: [],
+          advice: {
+            content: (Array.isArray(payload.report?.forStudent?.advice) ? payload.report.forStudent.advice : [])
+              .map((x: any) => {
+                if (typeof x === 'string') return x;
+                if (!x) return '';
+                if (typeof x === 'object') {
+                  try {
+                    return JSON.stringify(x);
+                  } catch {
+                    return String(x);
+                  }
+                }
+                return String(x);
+              })
+              .filter(Boolean),
+            habit,
+          },
+        },
+        paperAppearance: payload.paperAppearance,
+        practiceQuestions,
+        practicePaper: payload.practicePaper,
+        acceptanceQuiz: payload.acceptanceQuiz,
+        job: {
+          id: jobId,
+          status: 'completed',
+          stage: 'completed',
+        },
+      };
+
+      if (onUpdateExam) onUpdateExam(nextExam);
+    },
+    [buildPracticeQuestions, data, jobId, onUpdateExam, parseProblemTextToKnowledgeItem, studentInfo, summary]
+  );
+
+  useEffect(() => {
+    if (!jobId) return;
+
+    let disposed = false;
+    let pollingTimer: any = null;
+    let es: EventSource | null = null;
+    let sseRetryTimer: any = null;
+    const lastEventIdRef = { current: 0 };
+    const sseFailCountRef = { current: 0 };
+
+    const setLoadingState = (status: string, stage: string, message?: string) => {
+      setJobStatus(status);
+      setJobStage(stage);
+      setJobMessage(message || '');
+      const running = status !== 'completed' && status !== 'failed' && status !== 'canceled';
+      setShowIntro(running);
+    };
+
+    const pollOnce = async () => {
+      try {
+        const r = await fetch(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}?includeResult=1`, {
+          headers: {
+            ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
+          },
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j?.success === false) {
+          return;
+        }
+        const job = j?.job || {};
+        setLoadingState(String(job?.status || ''), String(job?.stage || ''), String(job?.errorMessage || ''));
+        const imgCount = Number(job?.imageCount || 0) || 0;
+        const estSecs = Number(job?.estimateSeconds || 0) || 0;
+        if (imgCount > 0) setJobImageCount(imgCount);
+        if (estSecs > 0) setJobEstimateSeconds(estSecs);
+        if (j?.result) {
+          applyAnalyzeResultToExam(j.result);
+          setLoadingState('completed', 'completed', '');
+        }
+      } catch {}
+    };
+
+    const startPolling = () => {
+      if (pollingTimer) return;
+      setIsPolling(true);
+      pollOnce();
+      pollingTimer = setInterval(pollOnce, 2500);
+    };
+
+    const startSse = () => {
+      if (es) return;
+      const qs = new URLSearchParams();
+      if (trialAccessCode) qs.set('accessCode', trialAccessCode);
+      if (lastEventIdRef.current > 0) qs.set('lastEventId', String(lastEventIdRef.current));
+      const query = qs.toString();
+      const url = `/api/analyze-images/jobs/${encodeURIComponent(jobId)}/events${query ? `?${query}` : ''}`;
+      es = new EventSource(url);
+      es.onmessage = (evt) => {
+        if (disposed) return;
+        const le = Number((evt as any)?.lastEventId || 0) || 0;
+        if (le > 0) lastEventIdRef.current = le;
+        sseFailCountRef.current = 0;
+        let payload: any = null;
+        try {
+          payload = JSON.parse(String(evt.data || ''));
+        } catch {
+          return;
+        }
+        const t = String(payload?.type || '');
+        if (t === 'snapshot') {
+          const job = payload?.job || {};
+          setLoadingState(String(job?.status || ''), String(job?.stage || ''), String(job?.errorMessage || ''));
+          const imgCount = Number(job?.imageCount || 0) || 0;
+          const estSecs = Number(job?.estimateSeconds || 0) || 0;
+          if (imgCount > 0) setJobImageCount(imgCount);
+          if (estSecs > 0) setJobEstimateSeconds(estSecs);
+          if (String(job?.status || '') === 'failed' && job?.errorMessage) {
+            showToast(String(job.errorMessage));
+          }
+          return;
+        }
+        if (t === 'progress') {
+          const status = jobStatusRef.current || 'running';
+          setLoadingState(status, String(payload?.stage || ''), String(payload?.message || ''));
+          return;
+        }
+        if (t === 'result') {
+          applyAnalyzeResultToExam(payload?.result);
+          setLoadingState('completed', 'completed', '');
+          try {
+            es?.close();
+          } catch {}
+          return;
+        }
+        if (t === 'error') {
+          setLoadingState('failed', 'failed', String(payload?.errorMessage || '分析失败'));
+          showToast(String(payload?.errorMessage || '分析失败'));
+          try {
+            es?.close();
+          } catch {}
+          return;
+        }
+      };
+      es.onerror = () => {
+        if (disposed) return;
+        try {
+          es?.close();
+        } catch {}
+        es = null;
+        sseFailCountRef.current += 1;
+        if (sseFailCountRef.current >= 3) {
+          startPolling();
+          return;
+        }
+        if (sseRetryTimer) return;
+        sseRetryTimer = setTimeout(() => {
+          sseRetryTimer = null;
+          if (disposed) return;
+          startSse();
+        }, 1000);
+      };
+    };
+
+    setLoadingState(jobStatus || 'pending', jobStage || 'analyzing', jobMessage || '');
+    startSse();
+
+    return () => {
+      disposed = true;
+      if (pollingTimer) clearInterval(pollingTimer);
+      if (sseRetryTimer) clearTimeout(sseRetryTimer);
+      try {
+        es?.close();
+      } catch {}
+    };
+  }, [applyAnalyzeResultToExam, jobId, jobMessage, jobStage, jobStatus, trialAccessCode]);
+
+  const cancelJob = async () => {
+    if (!jobId) return;
+    if (canceling) return;
+    try {
+      setCanceling(true);
+      const r = await fetch(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: 'POST',
+        headers: {
+          ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
+        },
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j?.success === false) {
+        throw new Error(j?.errorMessage || r.statusText || '取消失败');
+      }
+      showToast('已取消');
+      setJobStatus('canceled');
+      setJobStage('canceled');
+      setShowIntro(false);
+    } catch (e: any) {
+      showToast(String(e?.message || '取消失败'));
+    } finally {
+      setCanceling(false);
+    }
+  };
+
+  const retryJob = async () => {
+    if (!jobId) return;
+    if (retrying) return;
+    try {
+      setRetrying(true);
+      const r = await fetch(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}/retry`, {
+        method: 'POST',
+        headers: {
+          ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
+        },
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j?.success === false) {
+        throw new Error(j?.errorMessage || r.statusText || '重试失败');
+      }
+      setJobStatus('pending');
+      setJobStage('queued');
+      setJobMessage('');
+      setShowIntro(true);
+      showToast('已触发重试');
+    } catch (e: any) {
+      showToast(String(e?.message || '重试失败'));
+    } finally {
+      setRetrying(false);
+    }
+  };
+
   useEffect(() => {
     const onResize = () => setIsDesktop(window.innerWidth >= 768);
     window.addEventListener('resize', onResize);
@@ -230,6 +647,15 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   const practiceQuestions: string[] = data?.practiceQuestions || [];
   const review = data?.review;
   const acceptanceQuiz = data?.acceptanceQuiz;
+  useEffect(() => {
+    setGeneratedAcceptanceQuiz(null);
+  }, [data?.id]);
+
+  const effectiveAcceptanceQuiz = useMemo(() => {
+    if (acceptanceQuiz?.questions?.length) return acceptanceQuiz;
+    if (generatedAcceptanceQuiz?.questions?.length) return generatedAcceptanceQuiz;
+    return null;
+  }, [acceptanceQuiz, generatedAcceptanceQuiz]);
 
   const knownWeakPoints = useMemo(() => {
     if (!Array.isArray(modules?.problems)) return [];
@@ -434,34 +860,38 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   })();
 
   const methodTasks = useMemo(() => {
-    return (studyCoach.methods || []).map((text: string, i: number) => {
+    const list = (studyCoach.methods || []).map((text: string, i: number) => {
       const weakPoint = pickWeakPoint(text);
       return {
         id: `m-${i}`,
         text,
         weakPoint,
         tagLabel: `${weakPoint}专项`,
-        minutes: 15,
+        minutes: isPlanCompressed ? 10 : 15,
       };
     });
-  }, [studyCoach.methods, knownWeakPoints, defaultWeakPoint]);
+    return isPlanCompressed ? list.slice(0, 2) : list;
+  }, [studyCoach.methods, knownWeakPoints, defaultWeakPoint, isPlanCompressed]);
 
   const dayPlan = useMemo(() => {
     const raw = Array.isArray(studyCoach.weekPlan) ? studyCoach.weekPlan : [];
     const list: { day: number; text: string; weakPoint: string; minutes: number }[] = [];
     for (let day = 1; day <= 7; day += 1) {
       const baseText = String(raw[day - 1] || '').trim();
-      const text =
-        baseText ||
-        (day === 7
-          ? `第 7 天：验收小测 + 结果归档到错题巩固本（复盘 1 句）`
-          : `第 ${day} 天：${defaultWeakPoint} 专项 3 题（20 分钟）+ 复盘一句话`);
+      const text = isPlanCompressed
+        ? day === 7
+          ? `第 7 天：20 分钟验收小测（3 题）+ 复盘一句话`
+          : `第 ${day} 天：20 分钟 ${defaultWeakPoint} 专项 3 题 + 复盘一句话`
+        : baseText ||
+          (day === 7
+            ? `第 7 天：验收小测 + 结果归档到错题巩固本（复盘 1 句）`
+            : `第 ${day} 天：${defaultWeakPoint} 专项 3 题（20 分钟）+ 复盘一句话`);
       const weakPoint = pickWeakPoint(text);
-      const minutes = day === 7 ? 15 : 20;
+      const minutes = isPlanCompressed ? 20 : day === 7 ? 15 : 20;
       list.push({ day, text, weakPoint, minutes });
     }
     return list;
-  }, [studyCoach.weekPlan, defaultWeakPoint, knownWeakPoints]);
+  }, [studyCoach.weekPlan, defaultWeakPoint, knownWeakPoints, isPlanCompressed]);
 
   const customByDay = useMemo(() => {
     const map = new Map<number, { id: string; text: string; weakPoint: string }[]>();
@@ -488,7 +918,12 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const generatePracticeForWeakPoint = async (weakPoint: string, wrongQuestion?: string, dataPatch?: any) => {
+  const generatePracticeForWeakPoint = async (
+    weakPoint: string,
+    wrongQuestion?: string,
+    dataPatch?: any,
+    opts?: { openPractice?: boolean; toastOnSuccess?: boolean }
+  ) => {
     const wp = String(weakPoint || '').trim();
     if (!wp) return;
 
@@ -545,13 +980,169 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
       };
 
       if (onUpdateExam) onUpdateExam(nextData);
-      if (onOpenPractice) onOpenPractice();
-      showToast(`已生成“${wp}”专项 3 题`);
+      if (opts?.openPractice !== false && onOpenPractice) onOpenPractice();
+      if (opts?.toastOnSuccess !== false) showToast(`已生成“${wp}”专项 3 题`);
+      return { sectionName, questions };
     } catch (err: any) {
       showToast(`生成失败：${err?.message || '未知错误'}`);
+      return null;
     } finally {
       setGeneratingWeakPoint(null);
     }
+  };
+
+  const generateAcceptanceQuizForWeakPoint = async (weakPoint: string) => {
+    const wp = String(weakPoint || '').trim();
+    if (!wp) return null;
+
+    const res = await fetch('/api/generate-practice', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        weakPoint: wp,
+        wrongQuestion: '验收小测',
+        subject: studentInfo.subject,
+        grade: studentInfo.grade,
+        provider: llmConfig.provider,
+      }),
+    });
+
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json?.success === false) {
+      throw new Error(json?.errorMessage || res.statusText || '生成失败');
+    }
+
+    const payload = json?.data ?? json;
+    const questionsRaw = Array.isArray(payload?.questions) ? payload.questions : [];
+    const questions = questionsRaw
+      .map((q: any, idx: number) => ({
+        no: Number(q?.no || idx + 1),
+        content: String(q?.content || '').trim(),
+        hints: Array.isArray(q?.hints) ? q.hints.map((h: any) => String(h || '').trim()).filter(Boolean) : [],
+      }))
+      .filter((q: any) => q.content);
+
+    const quiz = {
+      title: `验收小测：${wp}`,
+      passRule: '正确率≥60%',
+      questions,
+    };
+
+    setGeneratedAcceptanceQuiz(quiz);
+    if (onUpdateExam) {
+      onUpdateExam({
+        ...(data || {}),
+        acceptanceQuiz: quiz,
+      });
+    }
+
+    return quiz;
+  };
+
+  const handleEnterAcceptance = async () => {
+    if (effectiveAcceptanceQuiz?.questions?.length) {
+      setIsAcceptanceOpen(true);
+      return;
+    }
+    if (generatingAcceptance) return;
+
+    setGeneratingAcceptance(true);
+    showToast('正在生成验收小测，请稍候...');
+    try {
+      const quiz = await generateAcceptanceQuizForWeakPoint(defaultWeakPoint);
+      if (quiz?.questions?.length) {
+        showToast('验收小测已生成');
+        setIsAcceptanceOpen(true);
+      } else {
+        showToast('验收小测生成失败');
+      }
+    } catch (e: any) {
+      showToast(`验收小测生成失败：${String(e?.message || '未知错误')}`);
+    } finally {
+      setGeneratingAcceptance(false);
+    }
+  };
+
+  const copyToClipboard = (text: string, okMsg: string, failMsg: string) => {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard
+        .writeText(text)
+        .then(() => showToast(okMsg))
+        .catch(() => showToast(failMsg));
+      return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      showToast(okMsg);
+    } catch {
+      showToast(failMsg);
+    }
+    document.body.removeChild(textarea);
+  };
+
+  const buildParentScript = () => {
+    const name = String(studentInfo?.name || '孩子');
+    const subject = String(studentInfo?.subject || '本学科');
+    const examName = String(studentInfo?.examName || '本次考试');
+    const totalScore = Number(summary?.totalScore ?? 0);
+    const fullScore = Number(summary?.fullScore ?? 0);
+    const scoreLine = fullScore > 0 ? `${totalScore}/${fullScore}` : String(totalScore || '');
+    const strongest = String(summary?.strongestKnowledge || '').trim();
+    const weakest = String(summary?.weakestKnowledge || '').trim();
+
+    const coreProblems = Array.isArray(modules?.problems) ? modules.problems.slice(0, 2) : [];
+    const points = coreProblems
+      .map((p: any) => String(p?.name || '').trim())
+      .filter(Boolean);
+
+    const praise = strongest ? `这次${subject}里“${strongest}”表现比较稳，值得表扬。` : `这次${subject}整体完成度不错，值得表扬。`;
+    const focus = weakest ? `接下来我们把“${weakest}”作为重点。` : `接下来我们把本次错因作为重点。`;
+    const problemsLine = points.length > 0 ? `目前主要卡点是：${points.join('、')}。` : '';
+
+    return [
+      `家长您好，${name}的《${examName}》${subject}成绩我已看过（${scoreLine}）。`,
+      praise,
+      problemsLine,
+      focus,
+      '本周执行一个轻量计划：每天 20 分钟做 3 道同类题 + 复盘一句话（错因 + 下次检查点）。',
+      '我会同步观察完成情况与错题变化，有需要再和您沟通调整。',
+    ]
+      .map((s) => String(s || '').trim())
+      .filter(Boolean)
+      .join('\n');
+  };
+
+  const handleToggle20MinPlan = () => {
+    const next = isPlanCompressed ? 'normal' : '20min';
+    setPlanMode(next);
+    if (onUpdateExam) onUpdateExam({ ...(data || {}), planMode: next });
+    setActiveStage('training');
+    scrollTo('plan-card');
+    showToast(next === '20min' ? '已压缩为 20 分钟计划（7 天循环）' : '已恢复为完整计划');
+  };
+
+  const handleGenerateParentScript = () => {
+    const text = buildParentScript();
+    copyToClipboard(text, '已复制家长沟通话术', '复制失败，请手动选中文本复制');
+  };
+
+  const handlePrintWeeklyNotebook = () => {
+    try {
+      localStorage.setItem('errorLedger:autoPrint', '1');
+      localStorage.setItem('errorLedger:filter', 'unsolved');
+    } catch {}
+    if (onOpenNotebook) {
+      onOpenNotebook();
+      return;
+    }
+    showToast('未找到错题本入口');
   };
 
   const handleShare = () => {
@@ -812,7 +1403,7 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
             onClick={() => {
               setActiveStage('acceptance');
               scrollTo('practice-preview-section');
-              if (acceptanceQuiz?.questions) setIsAcceptanceOpen(true);
+              handleEnterAcceptance();
             }}
           >
             验收
@@ -852,11 +1443,117 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         </div>
       )}
 
+      {jobId && jobStatus !== 'completed' && jobStatus !== 'failed' && jobStatus !== 'canceled' && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 12,
+            left: 12,
+            right: 12,
+            zIndex: 200,
+            background: 'rgba(255,255,255,0.92)',
+            border: '1px solid rgba(148,163,184,0.55)',
+            borderRadius: 12,
+            padding: '10px 12px',
+            boxShadow: '0 10px 20px rgba(0,0,0,0.08)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 12,
+            alignItems: 'center',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ fontSize: 13, color: '#0f172a', fontWeight: 600 }}>
+              {jobStage === 'queued'
+                ? '排队中…'
+                : jobStage === 'generating'
+                  ? '正在生成报告…'
+                  : '正在解析试卷…'}
+            </div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>
+              {jobMessage ||
+                [
+                  jobImageCount ? `共 ${jobImageCount} 页` : '',
+                  estimateSeconds ? `预计 ${Math.max(30, Math.round(estimateSeconds / 10) * 10)} 秒左右` : '',
+                  isPolling ? '连接不稳定，已切到轮询' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ') ||
+                '请保持页面打开，完成后会自动刷新内容'}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="op-btn-secondary"
+              onClick={() => {
+                try {
+                  navigator.clipboard?.writeText(jobId);
+                  showToast('已复制 jobId');
+                } catch {
+                  showToast(`jobId：${jobId}`);
+                }
+              }}
+            >
+              复制jobId
+            </button>
+            <button className="op-btn-secondary" onClick={cancelJob} disabled={canceling}>
+              {canceling ? '取消中…' : '取消'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {jobId && (jobStatus === 'failed' || jobStatus === 'canceled') && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 12,
+            left: 12,
+            right: 12,
+            zIndex: 200,
+            background: 'rgba(255,255,255,0.92)',
+            border: '1px solid rgba(239,68,68,0.35)',
+            borderRadius: 12,
+            padding: '10px 12px',
+            boxShadow: '0 10px 20px rgba(0,0,0,0.08)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 12,
+            alignItems: 'center',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div style={{ fontSize: 13, color: '#991b1b', fontWeight: 700 }}>{jobStatus === 'canceled' ? '已取消' : '分析失败'}</div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>{jobMessage || '可尝试重试，或复制 jobId 反馈排查'}</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="op-btn-secondary"
+              onClick={() => {
+                try {
+                  navigator.clipboard?.writeText(jobId);
+                  showToast('已复制 jobId');
+                } catch {
+                  showToast(`jobId：${jobId}`);
+                }
+              }}
+            >
+              复制jobId
+            </button>
+            <button className="op-btn-primary" onClick={retryJob} disabled={retrying}>
+              {retrying ? '重试中…' : '重试'}
+            </button>
+          </div>
+        </div>
+      )}
+
       <SettingsModal 
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         studentInfo={studentInfo}
         onUpdateStudentInfo={() => {}} 
+        trialAccessCode={trialAccessCode}
+        onUpdateTrialAccessCode={setTrialAccessCode}
         llmConfig={llmConfig}
         onUpdateLlmConfig={setLlmConfig}
       />
@@ -1086,12 +1783,18 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
                         {d.day === 7 && (
                           <button
                             className="op-btn-primary"
-                            onClick={() => setIsAcceptanceOpen(true)}
+                            onClick={handleEnterAcceptance}
                             style={{ width: '100%', justifyContent: 'center', height: 40, background: '#16a34a' }}
-                            disabled={!acceptanceQuiz?.questions}
-                            title={acceptanceQuiz?.questions ? '' : '暂无验收小测'}
+                            disabled={generatingAcceptance}
+                            title={
+                              generatingAcceptance
+                                ? '正在生成验收小测'
+                                : effectiveAcceptanceQuiz?.questions?.length
+                                  ? ''
+                                  : '点击生成验收小测'
+                            }
                           >
-                            进入验收
+                            {generatingAcceptance ? '正在生成…' : '进入验收'}
                           </button>
                         )}
                       </div>
@@ -1122,15 +1825,15 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
                 </button>
               </div>
 
-              {acceptanceQuiz?.questions && (
-                <button 
-                  className="op-btn-primary" 
-                  onClick={() => setIsAcceptanceOpen(true)}
-                  style={{ width: '100%', justifyContent: 'center' }}
-                >
-                  开始验收小测
-                </button>
-              )}
+              <button
+                className="op-btn-primary"
+                onClick={handleEnterAcceptance}
+                style={{ width: '100%', justifyContent: 'center' }}
+                disabled={generatingAcceptance}
+                title={generatingAcceptance ? '正在生成验收小测' : ''}
+              >
+                {effectiveAcceptanceQuiz?.questions?.length ? '开始验收小测' : generatingAcceptance ? '正在生成验收小测…' : '生成并开始验收'}
+              </button>
             </div>
           </div>
 
@@ -1274,32 +1977,29 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
          <div>
            <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 12, color: '#1e293b' }}>⚡ 快捷指令</div>
            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-             <button 
-               className="op-btn-secondary" 
-               style={{ justifyContent: 'flex-start', fontSize: 12 }}
-               onClick={() => showToast('已自动压缩计划：保留高频错因，时长缩减至 20 分钟')}
-             >
-               <span>⏱️</span> 压缩为 20 分钟计划
-             </button>
-             <button 
-               className="op-btn-secondary" 
-               style={{ justifyContent: 'flex-start', fontSize: 12 }}
-               onClick={() => showToast('已生成沟通话术：建议重点表扬函数部分的进步')}
-             >
-               <span>💬</span> 生成家长沟通话术
-             </button>
-             <button 
-               className="op-btn-secondary" 
-               style={{ justifyContent: 'flex-start', fontSize: 12 }}
-               onClick={() => {
-                 setIsPreviewOpen(true);
-                 showToast('正在生成错题本预览...');
-               }}
-             >
-               <span>🖨️</span> 打印错题本 (本周)
-             </button>
-           </div>
-         </div>
+            <button 
+              className="op-btn-secondary" 
+              style={{ justifyContent: 'flex-start', fontSize: 12 }}
+              onClick={handleToggle20MinPlan}
+            >
+              <span>⏱️</span> 压缩为 20 分钟计划
+            </button>
+            <button 
+              className="op-btn-secondary" 
+              style={{ justifyContent: 'flex-start', fontSize: 12 }}
+              onClick={handleGenerateParentScript}
+            >
+              <span>💬</span> 生成家长沟通话术
+            </button>
+            <button 
+              className="op-btn-secondary" 
+              style={{ justifyContent: 'flex-start', fontSize: 12 }}
+              onClick={handlePrintWeeklyNotebook}
+            >
+              <span>🖨️</span> 打印错题本 (本周)
+            </button>
+          </div>
+        </div>
        </div>
       )}
 
@@ -1314,7 +2014,12 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
           <span style={{ fontSize: 20 }}>⚡</span>
           <span>练习</span>
         </button>
-        <button className="dock-btn main" onClick={() => setIsAcceptanceOpen(true)} disabled={!acceptanceQuiz?.questions} title="开始验收">
+        <button
+          className="dock-btn main"
+          onClick={handleEnterAcceptance}
+          disabled={generatingAcceptance}
+          title={generatingAcceptance ? '正在生成验收小测' : '开始验收'}
+        >
           <span style={{ fontSize: 20 }}>✅</span>
         </button>
         <button className="dock-btn" onClick={() => setIsPreviewOpen(true)} title="导出">
@@ -1330,7 +2035,7 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
       <AcceptanceModal
         isOpen={isAcceptanceOpen}
         onClose={() => setIsAcceptanceOpen(false)}
-        quiz={acceptanceQuiz || { title: '', passRule: '', questions: [] }}
+        quiz={effectiveAcceptanceQuiz || { title: '', passRule: '', questions: [] }}
         studentName={studentInfo.name}
         onPass={() => {
           const durationMinutes = data.startTime ? Math.round((Date.now() - data.startTime) / 60000) : 0;
@@ -1465,11 +2170,11 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
             </div>
 
             <div className="hud-footer">
-              <button className="op-btn-secondary" onClick={() => setIsPreviewOpen(false)} style={{ width: 'auto', padding: '0 20px' }}>
+              <button className="op-btn-secondary" onClick={() => setIsPreviewOpen(false)} style={{ width: 'auto', padding: '0 18px', height: 36, borderRadius: 999 }}>
                 取消
               </button>
-              <button className="op-btn-primary" onClick={() => window.print()} style={{ width: 'auto', padding: '0 20px' }}>
-                确认打印 / 保存 PDF
+              <button className="op-btn-primary" onClick={() => window.print()} style={{ width: 'auto', padding: '0 18px', height: 36, borderRadius: 999, marginLeft: 0 }}>
+                <Download size={16} style={{ marginRight: 8 }} /> 打印 / 保存 PDF
               </button>
             </div>
           </div>

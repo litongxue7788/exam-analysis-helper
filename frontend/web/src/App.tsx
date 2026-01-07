@@ -100,6 +100,7 @@ function App() {
 
         {activeTab === 'notebook' && (
           <ErrorLedger
+            currentExam={currentExam}
             onBack={() => setActiveTab('report')}
           />
         )}

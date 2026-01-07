@@ -658,11 +658,19 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
   const canStart = imageItems.length > 0 || !!dashboardData;
 
   const estimateSeconds = React.useMemo(() => {
-    const base = 12;
-    const per = 4;
+    const base = 70;
+    const per = 65;
     const secs = base + imageItems.length * per;
-    return Math.max(10, Math.min(90, secs));
+    return Math.max(60, Math.min(720, secs));
   }, [imageItems.length]);
+
+  const estimateDataUrlBytes = (dataUrl: string) => {
+    const comma = dataUrl.indexOf(',');
+    const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+    const len = base64.length;
+    const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+    return Math.floor((len * 3) / 4) - padding;
+  };
 
   const clearQueue = () => {
     queueItems.forEach((x) => {
@@ -743,8 +751,14 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
       if (imageItems.length > 0) {
         // 1. 转 Base64
         const base64Images = await Promise.all(imageItems.map((x) => fileToBase64(x.file, x.rotation)));
+
+        const approxBytes = base64Images.reduce((sum, u) => sum + estimateDataUrlBytes(u), 0);
+        const approxMb = approxBytes / 1024 / 1024;
+        if (approxMb >= 18) {
+          showToast(`图片总大小约 ${approxMb.toFixed(1)}MB，可能上传失败（建议减少页数或重拍更清晰且更近的照片）。`);
+        }
         
-        // 2. 调用后端 API
+        // 2. 创建异步分析作业并跳转
         const payload = {
           images: base64Images,
           provider: llmConfig.provider,
@@ -753,9 +767,9 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         };
 
         const controller = new AbortController();
-        const timeoutMs = Math.max(25_000, Math.min(120_000, estimateSeconds * 1000 + 20_000));
+        const timeoutMs = 60_000;
         const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-        const response = await fetch('/api/analyze-images', {
+        const response = await fetch('/api/analyze-images/jobs', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -772,94 +786,42 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
           throw err;
         }
 
-        const result: AnalyzeExamResponse = json;
-        
-        if (result.success && result.data) {
-          const typeAnalysis = result.data.typeAnalysis || [];
-          const inferredFullScore = typeAnalysis.length > 0
-            ? typeAnalysis.reduce((sum, item) => sum + (item.full || 0), 0)
-            : 100;
-          const mergedStudentInfo = {
-            ...studentInfo,
-            subject: result.data.subject || studentInfo.subject,
-            examName: result.data.examName || studentInfo.examName
-          };
+        const jobId = String(json?.jobId || '').trim();
+        if (!jobId) {
+          throw new Error('创建作业失败：未返回 jobId');
+        }
 
-          const summaryData = {
-            totalScore: result.data.summary.totalScore,
-            fullScore: inferredFullScore,
+        const reportData = {
+          studentInfo: { ...studentInfo },
+          summary: {
+            totalScore: 0,
+            fullScore: 100,
             classAverage: 79,
-            classRank: result.data.summary.rank,
+            classRank: 0,
             totalStudents: 50,
             scoreChange: 0,
-            overview: result.data.report.forStudent.overall,
-            strongestKnowledge: result.data.summary.strongestKnowledge,
-            weakestKnowledge: result.data.summary.weakestKnowledge
-          };
+            overview: '正在分析中...',
+            strongestKnowledge: '',
+            weakestKnowledge: ''
+          },
+          typeAnalysis: [],
+          startTime: Date.now(),
+          modules: {
+            evaluation: ['正在分析中...'],
+            problems: [],
+            keyErrors: [],
+            advice: { content: [], habit: [] }
+          },
+          job: {
+            id: jobId,
+            status: 'pending',
+            stage: 'queued',
+            imageCount: imageItems.length,
+            estimateSeconds
+          }
+        };
 
-          const practiceQuestions = buildPracticeQuestions(
-            result.data.practiceQuestions,
-            result.data.summary.weakestKnowledge,
-            mergedStudentInfo.subject
-          );
-
-          const reportData = {
-            studentInfo: mergedStudentInfo,
-            summary: summaryData,
-            typeAnalysis,
-            review: result.data.review,
-            studyMethods: result.data.studyMethods,
-            startTime: Date.now(), // V0.1 采集埋点：开始复盘时间
-            modules: {
-              evaluation: [
-                result.data.report.forStudent.overall,
-                ...result.data.report.forStudent.problems.slice(0, 1)
-              ],
-              problems: (result.data.report.forStudent.problems || []).map((p, idx) =>
-                parseProblemTextToKnowledgeItem(p, idx)
-              ),
-              keyErrors: [],
-              advice: {
-                content: result.data.report.forStudent.advice,
-                habit: (() => {
-                  const g = result.data.report.forParent.guidance;
-                  if (!g) return [];
-                  if (Array.isArray(g)) return g;
-                  if (typeof g === 'string') return [g];
-                  // Handle object case (e.g. { "习惯养成": [...] })
-                  if (typeof g === 'object') {
-                    if (g['习惯养成']) {
-                        return Array.isArray(g['习惯养成']) ? g['习惯养成'] : [String(g['习惯养成'])];
-                    }
-                    // Fallback: extract all string values
-                    return Object.values(g).flat().map(String);
-                  }
-                  return [];
-                })()
-              }
-            },
-            paperAppearance: result.data.paperAppearance,
-            practiceQuestions,
-            practicePaper: result.data.practicePaper, // Pass the structured paper data
-            acceptanceQuiz: result.data.acceptanceQuiz // Pass acceptance quiz
-          };
-
-          setDashboardData({
-            score: summaryData.totalScore,
-            fullScore: summaryData.fullScore,
-            typeAnalysis,
-            classAverage: summaryData.classAverage,
-            scoreChange: summaryData.scoreChange,
-            strongestKnowledge: summaryData.strongestKnowledge,
-            weakestKnowledge: summaryData.weakestKnowledge,
-            summary: summaryData.overview,
-            paperAppearance: result.data.paperAppearance
-          });
-
-          onAnalyzeComplete(reportData);
-        } else {
-          throw new Error(result.errorMessage || '分析失败');
-        }
+        onAnalyzeComplete(reportData);
 
       } else if (dashboardData) {
         // 场景 2: 如果是表格数据 (已有 dashboardData)
@@ -1188,7 +1150,7 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
                 {imageItems.length > 0 ? `已上传 ${imageItems.length} 张` : (hasExcel ? '已导入成绩表' : '请上传试卷图片')}
               </div>
               <div className="upload-status-sub">
-                {canStart ? `预计 ${estimateSeconds} 秒｜页序可拖动调整` : '上传后将自动校验页序与清晰度'}
+                {canStart ? `预计约 ${estimateSeconds >= 90 ? `${Math.ceil(estimateSeconds / 60)} 分钟` : `${estimateSeconds} 秒`}｜页序可拖动调整` : '上传后将自动校验页序与清晰度'}
               </div>
             </div>
             <div className="upload-status-right">
@@ -1495,7 +1457,7 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
             <div className="loading-spinner" />
             <div className="loading-title">正在分析试卷</div>
             <div className="loading-desc">
-              系统正在阅读整张试卷并生成个性化分析报告，这通常需要二三十秒。
+              系统正在阅读整张试卷并生成个性化分析报告，多页试卷通常需要 3-10 分钟。
             </div>
             <div className="loading-hint">
               请保持页面打开，不要反复点击按钮或关闭浏览器。
