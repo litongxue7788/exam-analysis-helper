@@ -2,24 +2,77 @@
 // 首页组件 (Home) - 优化版 (Page 1)
 // =================================================================================
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Settings, Image as ImageIcon, Camera, FileSpreadsheet, ChevronRight, RefreshCw } from 'lucide-react';
+import { Settings, Image as ImageIcon, Camera, FileSpreadsheet, ChevronRight, RefreshCw, GripVertical, Eye, RotateCw, Trash2, ArrowUp, ArrowDown, Plus } from 'lucide-react';
 import { AnalyzeExamRequest, AnalyzeExamResponse } from '../types/api';
+import { StudentProfile } from '../types/profile';
 import { SettingsModal } from '../components/SettingsModal';
 import { Dashboard } from '../components/Dashboard';
+import { StudentProfileModal } from '../components/StudentProfileModal';
 
-const parseProblemTextToKnowledgeItem = (text: string, index: number) => {
+const getThemeColor = (subject: string) => {
+  const s = String(subject || '').toLowerCase();
+  if (s.includes('数学') || s.includes('math')) return '#2563eb';
+  if (s.includes('英语') || s.includes('english')) return '#16a34a';
+  if (s.includes('语文') || s.includes('chinese')) return '#dc2626';
+  if (s.includes('物理')) return '#7c3aed';
+  if (s.includes('化学')) return '#0ea5e9';
+  if (s.includes('生物')) return '#10b981';
+  if (s.includes('历史')) return '#b45309';
+  if (s.includes('地理')) return '#0284c7';
+  if (s.includes('政治')) return '#c026d3';
+  return '#2563eb';
+};
+
+const parseProblemTextToKnowledgeItem = (rawText: any, index: number) => {
+  const text = typeof rawText === 'string' ? rawText : JSON.stringify(rawText);
   const knowledgeMatch = text.match(/【知识点】([^【\n]+)/);
+  const questionMatch = text.match(/【题号】([^【\n]+)/);
+  const scoreMatch = text.match(/【得分】([^【\n]+)/);
   const reasonMatch = text.match(/【错因】([^【\n]+)/);
+  const evidenceMatch = text.match(/【证据】([^【\n]+)/);
+  const confidenceMatch = text.match(/【置信度】([^【\n]+)/);
+  const fixMatch = text.match(/【最短改法】([^【\n]+)/);
   const name = knowledgeMatch && knowledgeMatch[1] ? knowledgeMatch[1].trim() : `问题${index + 1}`;
   const descParts: string[] = [];
+  if (questionMatch && questionMatch[1]) {
+    descParts.push(`题号：${questionMatch[1].trim()}`);
+  } else if (evidenceMatch && evidenceMatch[1]) {
+    const evidence = evidenceMatch[1].trim();
+    const hits: string[] = [];
+    const re = /题\s*([0-9]+(?:\([0-9]+\))?)/g;
+    let m: RegExpExecArray | null = null;
+    while ((m = re.exec(evidence)) !== null) {
+      const v = String(m[1] || '').trim();
+      if (v) hits.push(v);
+    }
+    const uniq = Array.from(new Set(hits));
+    if (uniq.length > 0) descParts.push(`题号：${uniq.join('、')}`);
+  }
+  if (scoreMatch && scoreMatch[1]) {
+    descParts.push(`得分：${scoreMatch[1].trim()}`);
+  }
   if (reasonMatch && reasonMatch[1]) {
     descParts.push(`错因：${reasonMatch[1].trim()}`);
   }
+  if (evidenceMatch && evidenceMatch[1]) {
+    descParts.push(`证据：${evidenceMatch[1].trim()}`);
+  }
+  if (confidenceMatch && confidenceMatch[1]) {
+    descParts.push(`置信度：${confidenceMatch[1].trim()}`);
+  }
+  if (fixMatch && fixMatch[1]) {
+    descParts.push(`最短改法：${fixMatch[1].trim()}`);
+  }
   const cleaned = text
     .replace(/【知识点】[^【\n]+/g, '')
+    .replace(/【题号】[^【\n]+/g, '')
+    .replace(/【得分】[^【\n]+/g, '')
     .replace(/【错因】[^【\n]+/g, '')
+    .replace(/【证据】[^【\n]+/g, '')
+    .replace(/【置信度】[^【\n]+/g, '')
+    .replace(/【最短改法】[^【\n]+/g, '')
     .trim();
   if (cleaned) {
     descParts.push(cleaned);
@@ -40,38 +93,183 @@ interface HomeProps {
 
 export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, history = [], onSwitchExam }) => {
   // --- 状态管理 ---
-  const [files, setFiles] = useState<File[]>([]);
+  const [queueItems, setQueueItems] = useState<
+    {
+      id: string;
+      file: File;
+      kind: 'image' | 'excel';
+      previewUrl?: string;
+      rotation: 0 | 90 | 180 | 270;
+    }[]
+  >([]);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false); // 历史记录弹窗状态
   const [isTrendsOpen, setIsTrendsOpen] = useState(false); // 趋势分析弹窗状态
+  const [previewId, setPreviewId] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [isDropActive, setIsDropActive] = useState(false);
+  const queueItemsRef = useRef<
+    {
+      id: string;
+      file: File;
+      kind: 'image' | 'excel';
+      previewUrl?: string;
+      rotation: 0 | 90 | 180 | 270;
+    }[]
+  >([]);
+  const [activeTopStage, setActiveTopStage] = useState<'upload' | 'queue' | 'overview'>('upload');
+  const homeContentRef = useRef<HTMLDivElement | null>(null);
+  const uploadSectionRef = useRef<HTMLDivElement | null>(null);
+  const queueSectionRef = useRef<HTMLDivElement | null>(null);
+  const overviewSectionRef = useRef<HTMLDivElement | null>(null);
 
-  // 学生信息 (优先从 LocalStorage 读取，如果 props.initialData 变化则更新)
-  const [studentInfo, setStudentInfo] = useState(() => {
-    const saved = localStorage.getItem('studentInfo');
-    return saved ? JSON.parse(saved) : (initialData?.studentInfo || {
-      name: '张三',
+  const scrollHomeTo = (target: 'upload' | 'queue' | 'overview') => {
+    const container = homeContentRef.current;
+    const ref =
+      target === 'upload'
+        ? uploadSectionRef
+        : target === 'queue'
+          ? queueSectionRef
+          : overviewSectionRef;
+    const el = ref.current;
+    if (!container || !el) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const elRect = el.getBoundingClientRect();
+    const nextTop = elRect.top - containerRect.top + container.scrollTop - 12;
+    container.scrollTo({ top: nextTop, behavior: 'smooth' });
+  };
+
+  // --- 多用户档案管理 (Phase 2) ---
+  const [profiles, setProfiles] = useState<StudentProfile[]>(() => {
+    try {
+      const saved = localStorage.getItem('studentProfiles');
+      if (saved) return JSON.parse(saved);
+      
+      // Migration: Check if legacy studentInfo exists
+      const legacy = localStorage.getItem('studentInfo');
+      if (legacy) {
+        const info = JSON.parse(legacy);
+        return [{ ...info, id: info.id || 'default-student' }];
+      }
+      
+      return [{
+        id: 'default-student',
+        name: '张三',
+        grade: '七年级',
+        subject: '数学',
+        className: '2班',
+        examName: '期中考试',
+        examTime: new Date().toISOString().split('T')[0]
+      }];
+    } catch (e) {
+       return [{
+        id: 'default-student',
+        name: '张三',
+        grade: '七年级',
+        subject: '数学',
+        className: '2班',
+        examName: '期中考试',
+        examTime: new Date().toISOString().split('T')[0]
+      }];
+    }
+  });
+
+  const [currentProfileId, setCurrentProfileId] = useState<string>(() => {
+    // Ensure currentProfileId is valid within loaded profiles
+    const savedId = localStorage.getItem('currentProfileId');
+    // We can't access profiles state here directly in initializer easily if we just defined it, 
+    // but the initializer runs once. 
+    // However, simpler to just read from localStorage or default.
+    return savedId || 'default-student'; 
+  });
+
+  // Derived current student info (synced with profiles)
+  // Ensure we always have a valid studentInfo even if ID mismatch
+  const studentInfo = profiles.find(p => p.id === currentProfileId) || profiles[0];
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    window.setTimeout(() => setToastMsg(null), 3000);
+  };
+
+  const handleUpdateStudentInfo = (newInfo: any) => {
+    setProfiles(prev => prev.map(p => p.id === studentInfo.id ? { ...p, ...newInfo } : p));
+  };
+  
+  const handleAddProfile = () => {
+    const name = window.prompt('请输入学生姓名:', '测试学生');
+    if (!name) return; // Cancelled
+
+    const newId = `student-${Date.now()}`;
+    const newProfile: StudentProfile = {
+      id: newId,
+      name: name,
       grade: '七年级',
       subject: '数学',
-      className: '2班',
-      examName: '期中考试',
+      className: '1班',
+      examName: '模拟测试',
       examTime: new Date().toISOString().split('T')[0]
-    });
-  });
+    };
+    setProfiles(prev => [...prev, newProfile]);
+    setCurrentProfileId(newId);
+  };
+
+  const handleSwitchProfile = (id: string) => {
+    setCurrentProfileId(id);
+  };
+
+  const handleDeleteProfile = (id: string) => {
+    if (profiles.length <= 1) {
+      showToast('至少保留一个档案');
+      return;
+    }
+    if (window.confirm('确定要删除该学生档案吗？')) {
+      const newProfiles = profiles.filter(p => p.id !== id);
+      setProfiles(newProfiles);
+      // If deleted current profile, switch to the first one
+      if (id === currentProfileId || !newProfiles.find(p => p.id === currentProfileId)) {
+         setCurrentProfileId(newProfiles[0].id);
+      }
+    }
+  };
+
+  useEffect(() => {
+    localStorage.setItem('studentProfiles', JSON.stringify(profiles));
+  }, [profiles]);
+
+  useEffect(() => {
+    localStorage.setItem('currentProfileId', currentProfileId);
+  }, [currentProfileId]);
 
   // 大模型配置
   const [llmConfig, setLlmConfig] = useState(() => {
-    const saved = localStorage.getItem('llmConfig');
-    return saved ? JSON.parse(saved) : {
-      provider: 'doubao',
-      apiKey: '',
-      modelId: ''
-    };
+    try {
+      const saved = localStorage.getItem('llmConfig');
+      return saved ? JSON.parse(saved) : {
+        provider: 'doubao',
+        apiKey: '',
+        modelId: ''
+      };
+    } catch (e) {
+      return {
+        provider: 'doubao',
+        apiKey: '',
+        modelId: ''
+      };
+    }
   });
 
   const [trialAccessCode, setTrialAccessCode] = useState(() => {
-    const saved = localStorage.getItem('trialAccessCode');
-    return saved ? JSON.parse(saved) : '';
+    try {
+      const saved = localStorage.getItem('trialAccessCode');
+      return saved ? JSON.parse(saved) : '';
+    } catch (e) {
+      return '';
+    }
   });
 
   // 仪表盘数据
@@ -100,8 +298,12 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
          summary: initialData.summary.overview,
        };
     }
-    const saved = localStorage.getItem('dashboardData');
-    return saved ? JSON.parse(saved) : null;
+    try {
+      const saved = localStorage.getItem('dashboardData');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
   });
 
   const buildPracticeQuestions = (
@@ -126,7 +328,7 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
   React.useEffect(() => {
     if (initialData) {
       if (initialData.studentInfo) {
-        setStudentInfo(initialData.studentInfo);
+        handleUpdateStudentInfo(initialData.studentInfo);
       }
       
       if (initialData.summary) {
@@ -147,9 +349,7 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
   }, [initialData]);
 
   // --- 持久化 Effects ---
-  React.useEffect(() => {
-    localStorage.setItem('studentInfo', JSON.stringify(studentInfo));
-  }, [studentInfo]);
+  // Note: studentInfo persistence is now handled by profiles effect
 
   React.useEffect(() => {
     localStorage.setItem('llmConfig', JSON.stringify(llmConfig));
@@ -165,72 +365,37 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
     }
   }, [dashboardData]);
 
+  // 趋势数据计算
   const trendData = React.useMemo(() => {
-    const validExams = history
-      .filter((exam) => {
-        if (!exam) return false;
-        const summaryScore =
-          exam.summary?.totalScore ??
-          exam.score?.totalScore ??
-          exam.totalScore ??
-          exam.score;
-        return typeof summaryScore === 'number' && !isNaN(summaryScore);
-      })
-      .slice()
-      .reverse();
-
-    if (validExams.length === 0) {
-      return {
-        exams: [] as any[],
-        scores: [] as number[],
-        labels: [] as string[],
-        maxScore: 0,
-        avgScore: 0,
-        improvement: 0,
-        chartPoints: '' as string,
-        pointPositions: [] as { x: number; y: number }[],
-        topStrongest: '',
-        topWeakest: '',
-        latestStrongest: '',
-        latestWeakest: '',
-      };
-    }
-
-    const limitedExams = validExams.slice(-5);
-
-    const scores = limitedExams.map((exam) => {
-      const summaryScore =
-        exam.summary?.totalScore ??
-        exam.score?.totalScore ??
-        exam.totalScore ??
-        exam.score;
-      return typeof summaryScore === 'number' ? summaryScore : 0;
+    // 按时间正序排列
+    const sortedHistory = [...history].sort((a, b) => {
+      const t1 = new Date(a.timestamp || 0).getTime();
+      const t2 = new Date(b.timestamp || 0).getTime();
+      return t1 - t2;
     });
 
-    const fullScores = limitedExams.map((exam) => {
-      const full =
-        exam.summary?.fullScore ??
-        exam.fullScore ??
-        exam.score?.fullScore;
-      return typeof full === 'number' && full > 0 ? full : 100;
-    });
+    const limitedExams = sortedHistory.slice(-5); // 只取最近 5 次
+    const scores = limitedExams.map(
+      (exam) => exam.summary?.totalScore ?? exam.score ?? 0
+    );
+    const labels = limitedExams.map((exam) =>
+      (exam.studentInfo?.examName || '未命名').replace('2024', '').replace('2025', '')
+    );
 
-    const labels = limitedExams.map((exam, index) => {
-      const name = exam.studentInfo?.examName || exam.examName;
-      const time = exam.timestamp || exam.studentInfo?.examTime;
-      const dateStr = time ? new Date(time).toLocaleDateString() : '';
-      if (name && dateStr) return `${name.replace(/\s+/g, '')}\n${dateStr}`;
-      if (name) return name.replace(/\s+/g, '');
-      return `第${index + 1}次`;
-    });
-
-    const maxScore = Math.max(...fullScores, 100);
+    const maxScore = Math.max(...scores, 100); // Y轴最大值至少 100
     const avgScore =
-      scores.reduce((sum, s) => sum + s, 0) / scores.length;
-    const improvement = scores[scores.length - 1] - scores[0];
+      scores.length > 0
+        ? scores.reduce((a, b) => a + b, 0) / scores.length
+        : 0;
 
-    const chartWidth = 300;
+    const improvement =
+      scores.length >= 2
+        ? scores[scores.length - 1] - scores[scores.length - 2]
+        : 0;
+
+    // SVG 坐标计算
     const chartHeight = 150;
+    const chartWidth = 300;
     const paddingX = 20;
     const paddingTop = 20;
     const paddingBottom = 20;
@@ -281,13 +446,22 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
 
     const latestExam = limitedExams[limitedExams.length - 1];
     const latestStrongest =
-      latestExam.summary?.strongestKnowledge ??
-      latestExam.strongestKnowledge ??
+      latestExam?.summary?.strongestKnowledge ??
+      latestExam?.strongestKnowledge ??
       '';
     const latestWeakest =
-      latestExam.summary?.weakestKnowledge ??
-      latestExam.weakestKnowledge ??
+      latestExam?.summary?.weakestKnowledge ??
+      latestExam?.weakestKnowledge ??
       '';
+
+    // 计算验收通过率 (Parent Dashboard)
+    const passedCount = limitedExams.filter(e => e.acceptanceResult?.passed).length;
+    const passRate = limitedExams.length > 0 
+        ? Math.round((passedCount / limitedExams.length) * 100) 
+        : 0;
+    
+    // 计算错因复发 (Mock Logic: simply based on repeated weakest knowledge)
+    const recurringWeakness = topWeakestEntry && topWeakestEntry[1] > 1 ? topWeakestEntry[0] : null;
 
     return {
       exams: limitedExams,
@@ -302,6 +476,8 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
       topWeakest: topWeakestEntry ? topWeakestEntry[0] : '',
       latestStrongest,
       latestWeakest,
+      passRate,
+      recurringWeakness
     };
   }, [history]);
 
@@ -315,14 +491,51 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: 'image' | 'excel') => {
     if (e.target.files && e.target.files.length > 0) {
       const selectedFiles = Array.from(e.target.files);
-      const newFiles = [...files, ...selectedFiles];
-      setFiles(newFiles);
+      const nextItems = selectedFiles.map((file) => {
+        const id = `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+        const isImage = type === 'image' && file.type.startsWith('image/');
+        const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
+        return {
+          id,
+          file,
+          kind: type,
+          previewUrl,
+          rotation: 0 as 0 | 90 | 180 | 270,
+        };
+      });
+      setQueueItems((prev) => [...prev, ...nextItems]);
       
       // 如果是Excel，尝试预解析以显示概览
       if (type === 'excel' && selectedFiles[0].name.endsWith('.csv')) {
         parsePreview(selectedFiles[0]);
       }
     }
+    e.target.value = '';
+  };
+
+  const addQueueFiles = (incoming: File[]) => {
+    const files = Array.isArray(incoming) ? incoming : [];
+    if (files.length === 0) return;
+
+    const nextItems = files.map((file) => {
+      const isImage = file.type.startsWith('image/');
+      const isExcel = /\.csv$/i.test(file.name) || /\.xlsx$/i.test(file.name);
+      const kind: 'image' | 'excel' = isExcel && !isImage ? 'excel' : 'image';
+      const id = `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const previewUrl = kind === 'image' ? URL.createObjectURL(file) : undefined;
+      return {
+        id,
+        file,
+        kind,
+        previewUrl,
+        rotation: 0 as 0 | 90 | 180 | 270,
+      };
+    });
+
+    setQueueItems((prev) => [...prev, ...nextItems]);
+
+    const csv = files.find((f) => /\.csv$/i.test(f.name));
+    if (csv) parsePreview(csv);
   };
 
   // 预解析 CSV 用于显示仪表盘预览 (模拟概览数据)
@@ -371,11 +584,11 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
     });
   };
 
-  const compressImageToDataURL = async (file: File): Promise<string> => {
+  const compressImageToDataURL = async (file: File, rotation: 0 | 90 | 180 | 270): Promise<string> => {
     const shouldSkip =
       file.size <= 700 * 1024 &&
       (file.type === 'image/jpeg' || file.type === 'image/jpg');
-    if (shouldSkip) {
+    if (shouldSkip && rotation === 0) {
       return readFileAsDataURL(file);
     }
 
@@ -395,14 +608,28 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
       const targetH = Math.max(1, Math.round(srcH * scale));
 
       const canvas = document.createElement('canvas');
-      canvas.width = targetW;
-      canvas.height = targetH;
+      const rot = rotation % 360;
+      const rotated = rot === 90 || rot === 270;
+      canvas.width = rotated ? targetH : targetW;
+      canvas.height = rotated ? targetW : targetH;
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         return readFileAsDataURL(file);
       }
 
+      ctx.save();
+      if (rot === 90) {
+        ctx.translate(canvas.width, 0);
+        ctx.rotate(Math.PI / 2);
+      } else if (rot === 180) {
+        ctx.translate(canvas.width, canvas.height);
+        ctx.rotate(Math.PI);
+      } else if (rot === 270) {
+        ctx.translate(0, canvas.height);
+        ctx.rotate((3 * Math.PI) / 2);
+      }
       ctx.drawImage(img, 0, 0, targetW, targetH);
+      ctx.restore();
       const dataUrl = canvas.toDataURL(outputType, quality);
       return dataUrl;
     } catch {
@@ -413,28 +640,109 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
   };
 
   // 辅助：文件转 Base64（手机端对图片做压缩，提升上传成功率）
-  const fileToBase64 = (file: File): Promise<string> => {
+  const fileToBase64 = (file: File, rotation: 0 | 90 | 180 | 270): Promise<string> => {
     if (file.type.startsWith('image/')) {
-      return compressImageToDataURL(file);
+      return compressImageToDataURL(file, rotation);
     }
     return readFileAsDataURL(file);
   };
 
+  const imageItems = React.useMemo(() => {
+    return queueItems.filter((x) => x.kind === 'image' && x.file.type.startsWith('image/'));
+  }, [queueItems]);
+
+  const hasExcel = React.useMemo(() => {
+    return queueItems.some((x) => x.kind === 'excel');
+  }, [queueItems]);
+
+  const canStart = imageItems.length > 0 || !!dashboardData;
+
+  const estimateSeconds = React.useMemo(() => {
+    const base = 12;
+    const per = 4;
+    const secs = base + imageItems.length * per;
+    return Math.max(10, Math.min(90, secs));
+  }, [imageItems.length]);
+
+  const clearQueue = () => {
+    queueItems.forEach((x) => {
+      if (x.previewUrl) URL.revokeObjectURL(x.previewUrl);
+    });
+    setQueueItems([]);
+    setDashboardData(null);
+    setPreviewId(null);
+  };
+
+  React.useEffect(() => {
+    queueItemsRef.current = queueItems;
+  }, [queueItems]);
+
+  React.useEffect(() => {
+    return () => {
+      queueItemsRef.current.forEach((x) => {
+        if (x.previewUrl) URL.revokeObjectURL(x.previewUrl);
+      });
+    };
+  }, []);
+
+  const removeItem = (id: string) => {
+    setQueueItems((prev) => {
+      const hit = prev.find((x) => x.id === id);
+      if (hit?.previewUrl) URL.revokeObjectURL(hit.previewUrl);
+      if (hit?.kind === 'excel') {
+        setDashboardData(null);
+      }
+      const next = prev.filter((x) => x.id !== id);
+      return next;
+    });
+    if (previewId === id) setPreviewId(null);
+  };
+
+  const rotateItem = (id: string) => {
+    setQueueItems((prev) => {
+      return prev.map((x) => {
+        if (x.id !== id) return x;
+        const next = ((x.rotation + 90) % 360) as 0 | 90 | 180 | 270;
+        return { ...x, rotation: next };
+      });
+    });
+  };
+
+  const moveImageItem = (fromId: string, toId: string) => {
+    setQueueItems((prev) => {
+      const fromIdx = prev.findIndex((x) => x.id === fromId);
+      const toIdx = prev.findIndex((x) => x.id === toId);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      const from = prev[fromIdx];
+      const to = prev[toIdx];
+      if (from.kind !== 'image' || to.kind !== 'image') return prev;
+      const next = [...prev];
+      next.splice(fromIdx, 1);
+      const insertIdx = fromIdx < toIdx ? toIdx - 1 : toIdx;
+      next.splice(insertIdx, 0, from);
+      return next;
+    });
+  };
+
   // 执行分析并跳转 (生成个人分析报告)
   const handleGenerateReport = async () => {
-    if (files.length === 0 && !dashboardData) {
-      alert('请先录入数据（拍照或导入表格）！');
+    if (!canStart) {
+      showToast('请先录入数据（拍照或导入表格）！');
       return;
     }
 
     setLoading(true);
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setLoading(false);
+      showToast('当前网络已断开，请检查 Wi-Fi/数据网络后重试。');
+      return;
+    }
 
     try {
       // 场景 1: 如果有上传的图片，优先使用图片分析 API
-      if (files.filter(f => f.type.startsWith('image')).length > 0) {
+      if (imageItems.length > 0) {
         // 1. 转 Base64
-        const imageFiles = files.filter(f => f.type.startsWith('image'));
-        const base64Images = await Promise.all(imageFiles.map(f => fileToBase64(f)));
+        const base64Images = await Promise.all(imageItems.map((x) => fileToBase64(x.file, x.rotation)));
         
         // 2. 调用后端 API
         const payload = {
@@ -444,6 +752,9 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
           grade: studentInfo.grade, // Pass the grade for tone adjustment
         };
 
+        const controller = new AbortController();
+        const timeoutMs = Math.max(25_000, Math.min(120_000, estimateSeconds * 1000 + 20_000));
+        const timer = window.setTimeout(() => controller.abort(), timeoutMs);
         const response = await fetch('/api/analyze-images', {
           method: 'POST',
           headers: {
@@ -451,13 +762,17 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
             ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
           },
           body: JSON.stringify(payload),
-        });
+          signal: controller.signal,
+        }).finally(() => window.clearTimeout(timer));
 
-        if (!response.ok) {
-          throw new Error(`API error: ${response.statusText}`);
+        const json = await response.json().catch(() => ({} as any));
+        if (!response.ok || json?.success === false) {
+          const err: any = new Error(json?.errorMessage || response.statusText || '分析失败');
+          err.status = response.status;
+          throw err;
         }
 
-        const result: AnalyzeExamResponse = await response.json();
+        const result: AnalyzeExamResponse = json;
         
         if (result.success && result.data) {
           const typeAnalysis = result.data.typeAnalysis || [];
@@ -492,6 +807,9 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
             studentInfo: mergedStudentInfo,
             summary: summaryData,
             typeAnalysis,
+            review: result.data.review,
+            studyMethods: result.data.studyMethods,
+            startTime: Date.now(), // V0.1 采集埋点：开始复盘时间
             modules: {
               evaluation: [
                 result.data.report.forStudent.overall,
@@ -503,12 +821,27 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
               keyErrors: [],
               advice: {
                 content: result.data.report.forStudent.advice,
-                habit: result.data.report.forParent.guidance ? [result.data.report.forParent.guidance] : []
+                habit: (() => {
+                  const g = result.data.report.forParent.guidance;
+                  if (!g) return [];
+                  if (Array.isArray(g)) return g;
+                  if (typeof g === 'string') return [g];
+                  // Handle object case (e.g. { "习惯养成": [...] })
+                  if (typeof g === 'object') {
+                    if (g['习惯养成']) {
+                        return Array.isArray(g['习惯养成']) ? g['习惯养成'] : [String(g['习惯养成'])];
+                    }
+                    // Fallback: extract all string values
+                    return Object.values(g).flat().map(String);
+                  }
+                  return [];
+                })()
               }
             },
             paperAppearance: result.data.paperAppearance,
             practiceQuestions,
-            practicePaper: result.data.practicePaper // Pass the structured paper data
+            practicePaper: result.data.practicePaper, // Pass the structured paper data
+            acceptanceQuiz: result.data.acceptanceQuiz // Pass acceptance quiz
           };
 
           setDashboardData({
@@ -552,6 +885,7 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
                 weakestKnowledge: dashboardData.weakestKnowledge
             },
             typeAnalysis: dashboardData.typeAnalysis,
+            startTime: Date.now(), // V0.1 采集埋点
             modules: {
                 evaluation: [
                     dashboardData.summary || "暂无评价",
@@ -574,33 +908,130 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
 
     } catch (error: any) {
       console.error('Analysis failed:', error);
-      alert(`分析失败: ${error.message}`);
+      const msg = String(error?.message || '').trim();
+      const status = Number((error as any)?.status || 0);
+
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        showToast('分析失败：当前网络连接异常，请检查 Wi-Fi/数据网络后重试。');
+        return;
+      }
+
+      if (String(error?.name || '') === 'AbortError') {
+        showToast('分析超时：请减少图片数量或稍后重试。');
+        return;
+      }
+
+      if (status === 401 || msg.includes('访问口令')) {
+        showToast('访问口令错误或缺失：请在设置中填写正确的口令。');
+        return;
+      }
+
+      if (status === 429 || msg.includes('请求过于频繁') || msg.includes('额度')) {
+        showToast(msg || '请求过于频繁，请稍后再试。');
+        return;
+      }
+
+      if (msg.includes('API Key') || msg.includes('未配置')) {
+        showToast('后端大模型配置异常（API Key 或模型未配置），请检查服务器环境或更换服务商。');
+        return;
+      }
+
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        showToast('无法连接到分析服务器，请确认后端已启动并检查网络。');
+        return;
+      }
+
+      if (msg.includes('图片分析失败')) {
+        showToast(msg);
+        return;
+      }
+
+      if (!msg) {
+        showToast('服务器暂时不可用，请稍后再试。');
+        return;
+      }
+
+      showToast(`分析失败：${msg}`);
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="home-layout" style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
-      {/* 1. 顶部栏 (固定) */}
-      <header className="home-header">
-        <div className="header-top-row">
-            <div className="app-title">试卷分析助手</div>
-            <button className="settings-btn" onClick={() => setIsSettingsOpen(true)}>
-            <Settings size={20} color="#333" />
-            </button>
+    <div
+      className="home-layout"
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        flex: 1,
+        overflow: 'hidden',
+        ['--theme' as any]: getThemeColor(studentInfo.subject),
+        ['--theme-cta' as any]: getThemeColor(studentInfo.subject),
+      }}
+    >
+      <div className="context-bar">
+        <div className="context-left">
+          <div className="context-info">
+            <div className="context-title">{studentInfo.subject}分析</div>
+            <div className="context-meta">
+              <span>{studentInfo.name}</span>
+              <span>•</span>
+              <span>{studentInfo.examName}</span>
+            </div>
+          </div>
         </div>
-        <div className="header-subtitle">
-            {studentInfo.name} · {studentInfo.grade}({studentInfo.className}) · {studentInfo.subject} · {studentInfo.examName}
+        <div className="stage-progress">
+          <button
+            className={`stage-step ${activeTopStage === 'upload' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTopStage('upload');
+              scrollHomeTo('upload');
+            }}
+          >
+            上传
+          </button>
+          <button
+            className={`stage-step ${activeTopStage === 'queue' ? 'active' : ''}`}
+            onClick={() => {
+              setActiveTopStage('queue');
+              scrollHomeTo('queue');
+            }}
+          >
+            队列
+          </button>
+          <button
+            className={`stage-step ${activeTopStage === 'overview' ? 'active' : ''}`}
+            onClick={() => {
+              if (!dashboardData) return;
+              setActiveTopStage('overview');
+              scrollHomeTo('overview');
+            }}
+            disabled={!dashboardData}
+          >
+            概览
+          </button>
         </div>
-      </header>
+        <div className="context-actions control-panel">
+          <button className="settings-btn" onClick={() => setIsHistoryOpen(true)} title="切换考试">
+            <RefreshCw size={20} color="#64748b" />
+          </button>
+          <button className="settings-btn" onClick={() => setIsSettingsOpen(true)} title="设置">
+            <Settings size={20} color="#64748b" />
+          </button>
+        </div>
+      </div>
 
       {/* 设置面板 */}
       <SettingsModal 
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         studentInfo={studentInfo}
-        onUpdateStudentInfo={setStudentInfo}
+        onUpdateStudentInfo={handleUpdateStudentInfo}
+        profiles={profiles}
+        currentProfileId={currentProfileId}
+        onSwitchProfile={handleSwitchProfile}
+        onAddProfile={handleAddProfile}
+        onDeleteProfile={handleDeleteProfile}
         trialAccessCode={trialAccessCode}
         onUpdateTrialAccessCode={setTrialAccessCode}
         llmConfig={llmConfig}
@@ -653,6 +1084,19 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
                                         <span style={{fontSize: 12, fontWeight: 'normal', color: '#666', marginLeft: 8}}>
                                             {exam.studentInfo?.subject}
                                         </span>
+                                        {exam.acceptanceResult?.passed && (
+                                            <span style={{
+                                                fontSize: 10, 
+                                                color: '#fff', 
+                                                background: '#4CAF50', 
+                                                padding: '2px 6px', 
+                                                borderRadius: 4, 
+                                                marginLeft: 8,
+                                                verticalAlign: 'middle'
+                                            }}>
+                                                已验收
+                                            </span>
+                                        )}
                                     </div>
                                     <div style={{fontSize: 12, color: '#999'}}>
                                         {exam.studentInfo?.name} · {new Date(exam.timestamp || Date.now()).toLocaleDateString()}
@@ -669,138 +1113,16 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         </div>
       )}
 
-      {/* 趋势分析弹窗 */}
-      {isTrendsOpen && (
-         <div className="settings-overlay" style={{
-            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.5)', zIndex: 110,
-            display: 'flex', justifyContent: 'center', alignItems: 'center'
-         }}>
-             <div className="history-modal" style={{maxHeight: '80vh', overflowY: 'auto'}}>
-                 <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16}}>
-                     <h3>学情趋势分析</h3>
-                     <button className="close-capsule-btn" onClick={() => setIsTrendsOpen(false)}>×</button>
-                 </div>
-                 
-                 <div style={{padding: '10px 0'}}>
-                     {trendData.exams.length === 0 ? (
-                       <div style={{
-                         background: '#fff',
-                         borderRadius: 12,
-                         padding: 20,
-                         boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
-                         marginBottom: 12,
-                         fontSize: 14,
-                         color: '#555',
-                         lineHeight: 1.6
-                       }}>
-                         目前还没有可用的历史记录。请先生成几次分析报告，再回来查看整体趋势。
-                       </div>
-                     ) : trendData.exams.length === 1 ? (
-                       <div style={{
-                         background: '#fff',
-                         borderRadius: 12,
-                         padding: 20,
-                         boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
-                         marginBottom: 12,
-                         fontSize: 14,
-                         color: '#555',
-                         lineHeight: 1.6
-                       }}>
-                         已记录 1 次考试。本页主要用于对比多次考试的变化，再完成至少 2 次考试后，趋势图和关键指标会自动更新。
-                       </div>
-                     ) : (
-                       <>
-                         <div style={{
-                           background: '#fff',
-                           borderRadius: 12,
-                           padding: 20,
-                           boxShadow: '0 2px 8px rgba(0,0,0,0.05)',
-                           marginBottom: 20
-                         }}>
-                           <div style={{marginBottom: 10, fontWeight: 'bold', color: '#333'}}>
-                             近{trendData.exams.length}次考试成绩趋势
-                           </div>
-                           <div style={{height: 200, display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', padding: '0 10px'}}>
-                             <svg width="100%" height="100%" viewBox="0 0 300 150">
-                               <line x1="0" y1="30" x2="300" y2="30" stroke="#eee" strokeWidth="1" strokeDasharray="4 4" />
-                               <line x1="0" y1="70" x2="300" y2="70" stroke="#eee" strokeWidth="1" strokeDasharray="4 4" />
-                               <line x1="0" y1="110" x2="300" y2="110" stroke="#eee" strokeWidth="1" strokeDasharray="4 4" />
-                               <polyline
-                                 points={trendData.chartPoints}
-                                 fill="none"
-                                 stroke="#66BB6A"
-                                 strokeWidth="3"
-                               />
-                               {trendData.pointPositions.map((p, index) => (
-                                 <circle key={index} cx={p.x} cy={p.y} r="4" fill="#66BB6A" />
-                               ))}
-                             </svg>
-                           </div>
-                           <div style={{display: 'flex', justifyContent: 'space-between', marginTop: 10, fontSize: 11, color: '#999'}}>
-                             {trendData.labels.map((label, index) => (
-                               <span key={index} style={{flex: 1, textAlign: 'center', whiteSpace: 'pre-wrap'}}>
-                                 {label}
-                               </span>
-                             ))}
-                           </div>
-                         </div>
-
-                         <div style={{display: 'flex', gap: 10, marginBottom: 20}}>
-                           <div style={{flex: 1, background: '#E8F5E9', padding: 15, borderRadius: 12}}>
-                             <div style={{fontSize: 12, color: '#666'}}>平均分</div>
-                             <div style={{fontSize: 20, fontWeight: 'bold', color: '#2E7D32'}}>
-                               {trendData.avgScore.toFixed(1)}
-                             </div>
-                           </div>
-                           <div style={{flex: 1, background: '#FFF3E0', padding: 15, borderRadius: 12}}>
-                             <div style={{fontSize: 12, color: '#666'}}>最高分</div>
-                             <div style={{fontSize: 20, fontWeight: 'bold', color: '#EF6C00'}}>
-                               {Math.max(...trendData.scores)}
-                             </div>
-                           </div>
-                           <div style={{flex: 1, background: '#E3F2FD', padding: 15, borderRadius: 12}}>
-                             <div style={{fontSize: 12, color: '#666'}}>整体变化</div>
-                             <div style={{fontSize: 20, fontWeight: 'bold', color: trendData.improvement >= 0 ? '#1565C0' : '#D32F2F'}}>
-                               {trendData.improvement >= 0 ? `+${trendData.improvement}` : trendData.improvement}
-                             </div>
-                           </div>
-                         </div>
-                       </>
-                     )}
-
-                     {trendData.exams.length > 0 && (
-                       <div style={{background: '#f9f9f9', padding: 15, borderRadius: 12}}>
-                         <div style={{fontWeight: 'bold', marginBottom: 8}}>能力结构变化</div>
-                         <div style={{fontSize: 13, color: '#555', lineHeight: 1.6, marginBottom: 6}}>
-                           最近一次考试的突出优势：{trendData.latestStrongest || '暂未识别'}。
-                         </div>
-                         <div style={{fontSize: 13, color: '#555', lineHeight: 1.6, marginBottom: 6}}>
-                           最近一次考试的主要薄弱点：{trendData.latestWeakest || '暂未识别'}。
-                         </div>
-                         {(trendData.topStrongest || trendData.topWeakest) && (
-                           <div style={{fontSize: 13, color: '#555', lineHeight: 1.6}}>
-                             {trendData.topStrongest && (
-                               <div>
-                                 多次考试中最常作为强项出现的知识：{trendData.topStrongest}。
-                               </div>
-                             )}
-                             {trendData.topWeakest && (
-                               <div>
-                                 多次考试中反复暴露的薄弱环节：{trendData.topWeakest}。
-                               </div>
-                             )}
-                           </div>
-                         )}
-                       </div>
-                     )}
-                 </div>
-             </div>
-         </div>
-      )}
+      {/* 趋势分析弹窗 (V4.0 学情档案) */}
+      <StudentProfileModal 
+        isOpen={isTrendsOpen}
+        onClose={() => setIsTrendsOpen(false)}
+        history={history}
+        onSwitchExam={onSwitchExam}
+      />
 
       {/* 2. 可滚动内容区 */}
-      <div className="home-content">
+      <div className="home-content" ref={homeContentRef}>
         
         {/* 0. 学科切换 */}
         <div style={{ padding: '16px 20px 0 20px' }}>
@@ -817,13 +1139,13 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
               {['数学', '语文', '英语'].map(subj => (
                 <button
                   key={subj}
-                  onClick={() => setStudentInfo({ ...studentInfo, subject: subj })}
+                  onClick={() => handleUpdateStudentInfo({ subject: subj })}
                   style={{
                     padding: '6px 14px',
                     borderRadius: 20,
                     fontSize: 13,
                     border: studentInfo.subject === subj ? 'none' : '1px solid #eee',
-                    background: studentInfo.subject === subj ? '#1a73e8' : '#f5f5f5',
+                    background: studentInfo.subject === subj ? 'rgb(var(--theme-rgb, 37 99 235))' : '#f5f5f5',
                     color: studentInfo.subject === subj ? '#fff' : '#666',
                     cursor: 'pointer',
                     transition: 'all 0.2s'
@@ -836,62 +1158,213 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
           </div>
         </div>
 
-        {/* 3. 数据入口区 */}
-        <div className="section-title">本次考试数据录入</div>
-        <div className="entry-card-container">
-            
-            {/* 3.1 拍照录入卡片 */}
-            <div className="entry-card" onClick={() => cameraInputRef.current?.click()}>
-                <div className="entry-card-icon">
-                    <Camera size={28} strokeWidth={1.5} />
-                </div>
-                <div className="entry-card-content">
-                    <div className="entry-card-title">拍照录入</div>
-                    <div className="entry-card-desc">拍摄试卷或成绩单<br/>后续支持自动识别题目与得分</div>
-                    <div className="entry-card-status">
-                        {files.filter(f => f.type.startsWith('image')).length > 0 
-                            ? `已上传 ${files.filter(f => f.type.startsWith('image')).length} 张图片` 
-                            : '尚未拍摄任何图片'}
-                    </div>
-                </div>
-                <ChevronRight size={20} color="#ccc" />
-                <input 
-                    type="file" 
-                    ref={cameraInputRef}
-                    hidden 
-                    accept="image/*" 
-                    multiple
-                    onChange={(e) => handleFileChange(e, 'image')}
-                />
+        <div className="section-title" ref={uploadSectionRef}>上传指挥台</div>
+        <div
+          className={`cmd-card upload-deck ${isDropActive ? 'drop-active' : ''}`}
+          onDragEnter={(e) => {
+            if (e.dataTransfer?.types?.includes('Files')) setIsDropActive(true);
+          }}
+          onDragOver={(e) => {
+            if (e.dataTransfer?.types?.includes('Files')) {
+              e.preventDefault();
+              setIsDropActive(true);
+            }
+          }}
+          onDragLeave={(e) => {
+            if (e.currentTarget === e.target) setIsDropActive(false);
+          }}
+          onDrop={(e) => {
+            const dropped = Array.from(e.dataTransfer.files || []);
+            if (dropped.length > 0) {
+              e.preventDefault();
+              addQueueFiles(dropped);
+            }
+            setIsDropActive(false);
+          }}
+        >
+          <div className="upload-statusbar">
+            <div className="upload-status-left">
+              <div className="upload-status-title">
+                {imageItems.length > 0 ? `已上传 ${imageItems.length} 张` : (hasExcel ? '已导入成绩表' : '请上传试卷图片')}
+              </div>
+              <div className="upload-status-sub">
+                {canStart ? `预计 ${estimateSeconds} 秒｜页序可拖动调整` : '上传后将自动校验页序与清晰度'}
+              </div>
             </div>
+            <div className="upload-status-right">
+              <button className="upload-mini-btn" onClick={() => cameraInputRef.current?.click()} disabled={loading}>
+                <Camera size={16} />
+                添加图片
+              </button>
+              <button className="upload-mini-btn" onClick={() => excelInputRef.current?.click()} disabled={loading}>
+                <FileSpreadsheet size={16} />
+                导入表格
+              </button>
+              <input
+                type="file"
+                ref={cameraInputRef}
+                hidden
+                accept="image/*"
+                multiple
+                onChange={(e) => handleFileChange(e, 'image')}
+              />
+              <input
+                type="file"
+                ref={excelInputRef}
+                hidden
+                accept=".csv,.xlsx"
+                onChange={(e) => handleFileChange(e, 'excel')}
+              />
+            </div>
+          </div>
 
-            {/* 3.2 表格导入卡片 */}
-            <div className="entry-card" onClick={() => excelInputRef.current?.click()}>
-                <div className="entry-card-icon">
-                    <FileSpreadsheet size={28} strokeWidth={1.5} />
+          <div className="upload-table-wrap" ref={queueSectionRef}>
+            {queueItems.length === 0 ? (
+              <div className="upload-empty">
+                <div className="upload-empty-icon">
+                  <ImageIcon size={18} />
                 </div>
-                <div className="entry-card-content">
-                    <div className="entry-card-title">表格导入</div>
-                    <div className="entry-card-desc">从 Excel 导入个人成绩<br/>支持上传个人成绩单或 Excel 文件</div>
-                    <div className="entry-card-status">
-                        {dashboardData ? '已导入成绩表' : '尚未导入成绩表'}
-                    </div>
-                </div>
-                <ChevronRight size={20} color="#ccc" />
-                <input 
-                    type="file" 
-                    ref={excelInputRef}
-                    hidden 
-                    accept=".csv,.xlsx" 
-                    onChange={(e) => handleFileChange(e, 'excel')}
-                />
-            </div>
+                <div className="upload-empty-text">把试卷照片拖进来或点击“添加图片”</div>
+              </div>
+            ) : (
+              <table className="upload-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 34 }}></th>
+                    <th style={{ width: 52 }}>预览</th>
+                    <th>名称</th>
+                    <th style={{ width: 64 }}>页码</th>
+                    <th style={{ width: 76 }}>状态</th>
+                    <th style={{ width: 120, textAlign: 'right' }}>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {queueItems.map((item) => {
+                    const isImage = item.kind === 'image' && item.file.type.startsWith('image/');
+                    const imgIndex = isImage ? imageItems.findIndex((x) => x.id === item.id) : -1;
+                    const pageText = isImage ? `P${imgIndex + 1}` : '-';
+                    const statusText = isImage ? '就绪' : (dashboardData ? '已解析' : '待解析');
+                    const dragOver = dragOverId === item.id && draggingId && draggingId !== item.id;
+                    return (
+                      <tr
+                        key={item.id}
+                        className={`${isImage ? 'draggable' : ''} ${dragOver ? 'drag-over' : ''}`}
+                        draggable={isImage}
+                        onDragStart={(e) => {
+                          if (!isImage) return;
+                          setDraggingId(item.id);
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', item.id);
+                        }}
+                        onDragOver={(e) => {
+                          if (!isImage) return;
+                          e.preventDefault();
+                          if (dragOverId !== item.id) setDragOverId(item.id);
+                        }}
+                        onDragLeave={() => {
+                          if (dragOverId === item.id) setDragOverId(null);
+                        }}
+                        onDrop={(e) => {
+                          if (!isImage) return;
+                          e.preventDefault();
+                          const fromId = String(e.dataTransfer.getData('text/plain') || '').trim();
+                          if (fromId && fromId !== item.id) moveImageItem(fromId, item.id);
+                          setDraggingId(null);
+                          setDragOverId(null);
+                        }}
+                        onDragEnd={() => {
+                          setDraggingId(null);
+                          setDragOverId(null);
+                        }}
+                      >
+                        <td className="upload-drag-cell">
+                          {isImage ? <GripVertical size={16} /> : null}
+                        </td>
+                        <td>
+                          {isImage ? (
+                            <div
+                              className="upload-thumb"
+                              onClick={() => setPreviewId(item.id)}
+                              role="button"
+                              tabIndex={0}
+                            >
+                              <img
+                                src={item.previewUrl}
+                                style={{ transform: `rotate(${item.rotation}deg)` }}
+                              />
+                            </div>
+                          ) : (
+                            <div className="upload-filechip">
+                              <FileSpreadsheet size={16} />
+                            </div>
+                          )}
+                        </td>
+                        <td className="upload-name">
+                          <div className="upload-name-main">{item.file.name}</div>
+                          <div className="upload-name-sub">{isImage ? '图片' : '表格'}</div>
+                        </td>
+                        <td className="upload-page">{pageText}</td>
+                        <td>
+                          <span className={`upload-status-pill ${isImage ? 'ok' : (dashboardData ? 'ok' : 'wait')}`}>
+                            {statusText}
+                          </span>
+                        </td>
+                        <td className="upload-actions">
+                          {isImage ? (
+                            <>
+                              <button className="upload-icon-btn" onClick={() => setPreviewId(item.id)} title="预览">
+                                <Eye size={16} />
+                              </button>
+                              <button className="upload-icon-btn" onClick={() => rotateItem(item.id)} title="旋转">
+                                <RotateCw size={16} />
+                              </button>
+                              <button
+                                className="upload-icon-btn"
+                                onClick={() => {
+                                  const idx = imageItems.findIndex((x) => x.id === item.id);
+                                  if (idx > 0) moveImageItem(item.id, imageItems[idx - 1].id);
+                                }}
+                                title="上移"
+                                disabled={imgIndex <= 0}
+                              >
+                                <ArrowUp size={16} />
+                              </button>
+                              <button
+                                className="upload-icon-btn"
+                                onClick={() => {
+                                  const idx = imageItems.findIndex((x) => x.id === item.id);
+                                  if (idx >= 0 && idx < imageItems.length - 1) moveImageItem(item.id, imageItems[idx + 1].id);
+                                }}
+                                title="下移"
+                                disabled={imgIndex < 0 || imgIndex >= imageItems.length - 1}
+                              >
+                                <ArrowDown size={16} />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button className="upload-icon-btn" onClick={() => excelInputRef.current?.click()} title="重新导入">
+                                <Plus size={16} />
+                              </button>
+                            </>
+                          )}
+                          <button className="upload-icon-btn danger" onClick={() => removeItem(item.id)} title="删除">
+                            <Trash2 size={16} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
         </div>
 
         {/* 4. 成绩概览区 (有数据时显示) */}
         {dashboardData && (
             <>
-                <div className="section-title">本次考试概览（当前学生）</div>
+                <div className="section-title" ref={overviewSectionRef}>本次考试概览（当前学生）</div>
                 <Dashboard 
                     score={dashboardData.score}
                     fullScore={dashboardData.fullScore}
@@ -910,15 +1383,111 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
       </div>
 
       {/* 5. 底部操作区 (固定) */}
-      <div className="bottom-operation-bar">
-        <button className="op-btn-secondary" onClick={() => setIsHistoryOpen(true)}>
-            <RefreshCw size={14} style={{ marginRight: 6, verticalAlign: 'middle' }}/>
-            切换考试
+      <div className="bottom-operation-bar bottom-operation-bar--home">
+        <button
+          className="op-btn-secondary op-btn-icon"
+          onClick={() => setIsHistoryOpen(true)}
+          title="切换考试"
+          data-tooltip="切换考试"
+          aria-label="切换考试"
+        >
+          <RefreshCw size={18} />
         </button>
-        <button className="op-btn-primary" onClick={handleGenerateReport} disabled={loading}>
-            {loading ? '生成中...' : '生成个人分析报告'}
+        <button
+          className="op-btn-secondary op-btn-icon"
+          onClick={clearQueue}
+          disabled={loading || (queueItems.length === 0 && !dashboardData)}
+          title="清空队列"
+          data-tooltip="清空队列"
+          aria-label="清空队列"
+        >
+          <Trash2 size={18} />
+        </button>
+        <button
+          className="op-btn-secondary op-btn-icon"
+          onClick={() => cameraInputRef.current?.click()}
+          disabled={loading}
+          title="继续添加"
+          data-tooltip="继续添加"
+          aria-label="继续添加"
+        >
+          <Plus size={18} />
+        </button>
+        <button
+          className="op-btn-primary op-btn-icon op-btn-icon-primary"
+          onClick={handleGenerateReport}
+          disabled={loading || !canStart}
+          title={loading ? '分析中...' : '开始分析'}
+          data-tooltip={loading ? '分析中...' : '开始分析'}
+          aria-label={loading ? '分析中' : '开始分析'}
+        >
+          <ChevronRight size={22} />
         </button>
       </div>
+
+      {toastMsg && (
+        <div className="toast-float">{toastMsg}</div>
+      )}
+
+      {previewId && (
+        <div
+          className="settings-overlay"
+          style={{
+            justifyContent: 'center',
+            alignItems: 'center',
+            background: 'rgba(15, 23, 42, 0.55)',
+            zIndex: 130,
+          }}
+          onClick={() => setPreviewId(null)}
+        >
+          {(() => {
+            const item = queueItems.find((x) => x.id === previewId);
+            if (!item || item.kind !== 'image' || !item.previewUrl) return null;
+            return (
+              <div
+                style={{
+                  width: '92%',
+                  maxWidth: 720,
+                  maxHeight: '86vh',
+                  background: 'rgba(255,255,255,0.92)',
+                  borderRadius: 16,
+                  overflow: 'hidden',
+                  border: '1px solid rgba(255,255,255,0.6)',
+                  boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 12, borderBottom: '1px solid rgba(148, 163, 184, 0.25)' }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.file.name}</div>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="upload-mini-btn" onClick={() => rotateItem(item.id)}>
+                      <RotateCw size={16} />
+                      旋转
+                    </button>
+                    <button className="upload-mini-btn" onClick={() => setPreviewId(null)}>
+                      关闭
+                    </button>
+                  </div>
+                </div>
+                <div style={{ padding: 12, background: 'rgba(241, 245, 249, 0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                  <img
+                    src={item.previewUrl}
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '74vh',
+                      borderRadius: 12,
+                      border: '1px solid rgba(148, 163, 184, 0.28)',
+                      background: '#fff',
+                      transform: `rotate(${item.rotation}deg)`,
+                      boxShadow: '0 10px 30px rgba(15, 23, 42, 0.14)',
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       {loading && (
         <div className="loading-overlay">

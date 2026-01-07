@@ -14,6 +14,7 @@ interface DashboardProps {
   weakestKnowledge?: string;
   summary?: string;
   showTypeAnalysis?: boolean; // Control whether to show the bar chart
+  isVerified?: boolean;
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ 
@@ -25,7 +26,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   strongestKnowledge,
   weakestKnowledge,
   summary,
-  showTypeAnalysis = true
+  showTypeAnalysis = true,
+  isVerified = false
 }) => {
   // 题型颜色映射
   const getTypeColor = (type: string, index: number) => {
@@ -99,7 +101,29 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const totalFullScore = fullScore > 0 ? fullScore : 100;
 
   return (
-    <div className="dashboard-card">
+    <div className="dashboard-card" style={{ position: 'relative', overflow: 'hidden' }}>
+      {isVerified && (
+        <div style={{
+          position: 'absolute',
+          top: -10,
+          right: -10,
+          width: 80,
+          height: 80,
+          background: 'linear-gradient(135deg, #4CAF50, #81C784)',
+          transform: 'rotate(45deg)',
+          display: 'flex',
+          alignItems: 'flex-end',
+          justifyContent: 'center',
+          paddingBottom: 5,
+          color: 'white',
+          fontWeight: 'bold',
+          fontSize: 12,
+          boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+          zIndex: 10
+        }}>
+          已验收
+        </div>
+      )}
       <div className="dashboard-content" style={{ flexDirection: 'column', gap: 16 }}>
         {/* 上半部分：图表区 (圆环 + 柱状图) */}
         <div style={{ display: 'flex', width: '100%', alignItems: 'center', gap: 24 }}>

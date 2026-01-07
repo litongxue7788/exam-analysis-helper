@@ -2,8 +2,9 @@
 // 设置弹窗组件 (SettingsModal) - 重构版
 // =================================================================================
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ModelSelector } from './ModelSelector';
+import { User, Plus, Trash2, Check } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -18,6 +19,11 @@ interface SettingsModalProps {
     examTime?: string;
   };
   onUpdateStudentInfo: (info: any) => void;
+  profiles?: any[]; // StudentProfile[]
+  currentProfileId?: string;
+  onSwitchProfile?: (id: string) => void;
+  onAddProfile?: () => void;
+  onDeleteProfile?: (id: string) => void;
   trialAccessCode?: string;
   onUpdateTrialAccessCode?: (code: string) => void;
   llmConfig: {
@@ -33,6 +39,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
   studentInfo,
   onUpdateStudentInfo,
+  profiles,
+  currentProfileId,
+  onSwitchProfile,
+  onAddProfile,
+  onDeleteProfile,
   trialAccessCode,
   onUpdateTrialAccessCode,
   llmConfig,
@@ -44,34 +55,151 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [adminMessage, setAdminMessage] = useState<string | null>(null);
   const [adminSaving, setAdminSaving] = useState(false);
 
-  // 如果 isOpen 为 false，也可以渲染，但通过 CSS 隐藏（为了动画效果），或者直接不渲染
-  // 为了简单起见，这里直接用条件渲染 + 简单的样式覆盖
-  if (!isOpen) return null;
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+  const [isDesktop, setIsDesktop] = useState(() => window.innerWidth >= 768);
 
-  // 模型名称映射
-  const getModelName = (id: string) => {
-    const map: Record<string, string> = {
-      'doubao': '豆包',
-      'aliyun': '通义',
-      'zhipu': '智谱',
-      'deepseek': 'DeepSeek'
+  useEffect(() => {
+    const onResize = () => setIsDesktop(window.innerWidth >= 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const handleHeaderPointerDown = (e: React.PointerEvent) => {
+    if (!isDesktop) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    setIsDragging(true);
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      originX: position.x,
+      originY: position.y,
     };
-    return map[id] || id;
   };
+
+  const handleHeaderPointerMove = (e: React.PointerEvent) => {
+    if (!isDesktop) return;
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    const dx = e.clientX - d.startX;
+    const dy = e.clientY - d.startY;
+    setPosition({ x: d.originX + dx, y: d.originY + dy });
+  };
+
+  const handleHeaderPointerUp = (e: React.PointerEvent) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    dragRef.current = null;
+    setIsDragging(false);
+  };
+
+  if (!isOpen) return null;
 
   return (
     <div className="settings-overlay">
-      <div className="settings-drawer">
-        <div className="settings-header">
+      <div 
+        className={`settings-drawer ${isDesktop ? 'hud-window' : ''}`}
+        style={{
+          transform: isDesktop ? `translate3d(${position.x}px, ${position.y}px, 0)` : undefined,
+          transition: isDragging ? 'none' : undefined
+        }}
+      >
+        <div 
+          className="settings-header hud-header"
+          onPointerDown={handleHeaderPointerDown}
+          onPointerMove={handleHeaderPointerMove}
+          onPointerUp={handleHeaderPointerUp}
+          onPointerCancel={handleHeaderPointerUp}
+        >
           <h3>基本信息设置</h3>
-          <button className="close-capsule-btn" onClick={onClose}>
+          <button className="close-capsule-btn" onClick={onClose} onPointerDown={(e) => e.stopPropagation()}>
             ×
           </button>
         </div>
 
         <div className="settings-body">
+          {profiles && profiles.length > 0 && (
+            <div className="profile-section" style={{ marginBottom: 24 }}>
+               <div className="section-label" style={{ fontSize: 13, color: '#999', marginBottom: 12 }}>学生档案 (切换/管理)</div>
+               <div className="profile-list" style={{ display: 'flex', gap: 16, overflowX: 'auto', paddingBottom: 8 }}>
+                  {profiles.map(p => {
+                    const isActive = p.id === currentProfileId;
+                    return (
+                      <div 
+                        key={p.id} 
+                        className={`profile-item ${isActive ? 'active' : ''}`}
+                        onClick={() => onSwitchProfile && onSwitchProfile(p.id)}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          cursor: 'pointer',
+                          opacity: isActive ? 1 : 0.6,
+                          minWidth: 56
+                        }}
+                      >
+                         <div style={{
+                           width: 48, height: 48, borderRadius: '50%', 
+                           background: isActive ? 'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)' : '#f1f5f9',
+                           display: 'flex', alignItems: 'center', justifyContent: 'center',
+                           border: isActive ? '2px solid white' : '1px solid #e2e8f0',
+                           boxShadow: isActive ? '0 4px 12px rgba(99, 102, 241, 0.3)' : 'none',
+                           position: 'relative',
+                           transition: 'all 0.2s'
+                         }}>
+                            {isActive ? <Check size={24} color="white" /> : <User size={24} color="#94a3b8" />}
+                         </div>
+                         <div style={{ marginTop: 6, fontSize: 12, fontWeight: isActive ? 'bold' : 'normal', color: '#334155', maxWidth: 64, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'center' }}>
+                           {p.name}
+                         </div>
+                      </div>
+                    );
+                  })}
+                  
+                  {onAddProfile && (
+                    <div 
+                      className="profile-item-add"
+                      onClick={onAddProfile}
+                      style={{
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', cursor: 'pointer', minWidth: 56, opacity: 0.8
+                      }}
+                    >
+                       <div style={{
+                         width: 48, height: 48, borderRadius: '50%', border: '2px dashed #cbd5e1',
+                         display: 'flex', alignItems: 'center', justifyContent: 'center',
+                         background: '#fff'
+                       }}>
+                          <Plus size={20} color="#94a3b8" />
+                       </div>
+                       <div style={{ marginTop: 6, fontSize: 12, color: '#64748b' }}>新建</div>
+                    </div>
+                  )}
+               </div>
+            </div>
+          )}
+
           <div className="form-group">
-            <label>学生姓名</label>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+               <label>学生姓名</label>
+               {profiles && profiles.length > 1 && onDeleteProfile && currentProfileId && (
+                  <button 
+                    onClick={() => onDeleteProfile(currentProfileId)}
+                    style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: 12, display: 'flex', alignItems: 'center', cursor: 'pointer', padding: 0 }}
+                    title="删除当前档案"
+                  >
+                    <Trash2 size={12} style={{ marginRight: 4 }} /> 删除
+                  </button>
+               )}
+            </div>
             <input 
               type="text" 
               className="styled-input"
@@ -158,13 +286,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               />
             </div>
           )}
-
-          <div className="divider-line"></div>
-
-          <div className="button-group-row">
-             <button className="secondary-btn flex-1" onClick={onClose}>取消</button>
-             <button className="primary-btn flex-1" onClick={onClose}>保存并关闭</button>
-          </div>
 
           <div className="admin-toggle-area" style={{marginTop: 20, opacity: 0.8}}>
             <div className="toggle-row" style={{justifyContent: 'space-between', alignItems: 'center'}}>
@@ -268,6 +389,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
             </>
           )}
+        </div>
+
+        <div className="settings-footer">
+          <div className="button-group-row">
+            <button className="secondary-btn flex-1" onClick={onClose}>取消</button>
+            <button className="primary-btn flex-1" onClick={onClose}>保存并关闭</button>
+          </div>
         </div>
       </div>
     </div>

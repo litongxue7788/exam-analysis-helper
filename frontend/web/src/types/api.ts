@@ -52,6 +52,12 @@ export interface AnalyzeExamResponse {
         guidance: string;      // 辅导建议
       };
     };
+
+    // (可选) 学习方法建议（由后端大模型产出）
+    studyMethods?: {
+      methods: string[];
+      weekPlan: string[];
+    };
     
     // 原始的大模型返回文本 (用于调试或备用)
     rawLlmOutput: string;
@@ -86,8 +92,26 @@ export interface AnalyzeExamResponse {
         questions: {
           no: number;
           content: string;
-          answer?: string;
+          hints?: string[];
         }[];
+      }[];
+    };
+
+    // (可选) 低置信度复核引导
+    review?: {
+      required: boolean;
+      reason?: string;
+      suggestions?: string[];
+    };
+
+    // (可选) 验收小测
+    acceptanceQuiz?: {
+      title: string;
+      passRule: string;
+      questions: {
+        no: number;
+        content: string;
+        hints?: string[];
       }[];
     };
   };

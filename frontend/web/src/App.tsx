@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react'
 import { Home } from './pages/Home'
 import { Report } from './pages/Report'
 import { PracticeSheet } from './pages/PracticeSheet'
+import { ErrorLedger } from './pages/ErrorLedger'
+import { ParentDashboard } from './pages/ParentDashboard'
 import { PrintLayout } from './components/PrintLayout'
 import { MOCK_DATA } from './data/mock'
 import './App.css'
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'analyze' | 'report' | 'practice'>('analyze');
+  const [activeTab, setActiveTab] = useState<'analyze' | 'report' | 'practice' | 'notebook' | 'dashboard'>('analyze');
 
   const [examHistory, setExamHistory] = useState<any[]>(() => {
     try {
@@ -20,12 +22,18 @@ function App() {
   });
 
   const [currentExamIndex, setCurrentExamIndex] = useState<number>(0);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
 
   const currentExam = examHistory[currentExamIndex] || null;
 
   useEffect(() => {
     localStorage.setItem('examHistory', JSON.stringify(examHistory));
   }, [examHistory]);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    window.setTimeout(() => setToastMsg(null), 3000);
+  };
 
   const handleAnalyzeComplete = (result: any) => {
     const newExam = {
@@ -50,6 +58,14 @@ function App() {
     setActiveTab('analyze');
   };
 
+  const handleUpdateExam = (newData: any) => {
+    setExamHistory(prev => {
+      const newHistory = [...prev];
+      newHistory[currentExamIndex] = newData;
+      return newHistory;
+    });
+  };
+
   return (
     <div className="app-container">
       <div className="page-wrapper">
@@ -67,6 +83,24 @@ function App() {
             data={currentExam}
             onBack={() => setActiveTab('analyze')}
             onOpenPractice={() => setActiveTab('practice')}
+            onOpenNotebook={() => setActiveTab('notebook')}
+            onOpenDashboard={() => setActiveTab('dashboard')}
+            onUpdateExam={handleUpdateExam}
+          />
+        )}
+
+        {activeTab === 'dashboard' && (
+          <ParentDashboard
+            currentExam={currentExam}
+            examHistory={examHistory}
+            onBack={() => setActiveTab('report')}
+            onUpdateExam={handleUpdateExam}
+          />
+        )}
+
+        {activeTab === 'notebook' && (
+          <ErrorLedger
+            onBack={() => setActiveTab('report')}
           />
         )}
 
@@ -74,12 +108,27 @@ function App() {
           <PracticeSheet
             data={currentExam}
             onBack={() => setActiveTab('report')}
+            onAcceptanceComplete={(result) => {
+              const updatedExam = {
+                ...currentExam,
+                acceptanceResult: result
+              };
+              handleUpdateExam(updatedExam);
+              if (result?.passed) {
+                showToast('验收通过，结果已保存！');
+              }
+              setActiveTab('report');
+            }}
           />
         )}
       </div>
 
       {/* 打印专用布局 (默认隐藏，仅在打印时显示) */}
       <PrintLayout data={currentExam} />
+
+      {toastMsg && (
+        <div className="toast-float">{toastMsg}</div>
+      )}
     </div>
   )
 }
