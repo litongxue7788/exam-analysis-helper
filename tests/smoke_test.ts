@@ -1,13 +1,10 @@
-declare const require: any;
-declare const process: any;
-declare const Buffer: any;
-
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 const SERVER_URL = 'http://localhost:3002';
 const API_ENDPOINT = '/api/analyze-images';
+const JOBS_ENDPOINT = '/api/analyze-images/jobs';
 
 // Image paths provided by user
 const IMAGE_PATHS = [
@@ -51,6 +48,10 @@ function postJson(endpoint: string, data: any): Promise<any> {
     req.write(body);
     req.end();
   });
+}
+
+async function sleep(ms: number) {
+  await new Promise((r) => setTimeout(r, ms));
 }
 
 function checkHealth(): Promise<void> {
@@ -172,4 +173,74 @@ async function runSmokeTest() {
   }
 }
 
-runSmokeTest();
+async function runJobsTest(base64Images: string[]) {
+  console.log('\n🚀 Starting Jobs Test: Analyze Images Job + Optional OCR');
+
+  const payload = {
+    images: base64Images.slice(0, 1),
+    provider: 'doubao',
+    subject: '数学',
+    grade: '七年级',
+    ocrTexts: [
+      '七年级数学期中考试 总分100 得分85 计算题30得28 填空题20得18 应用题50得39 主要问题：审题不细、计算粗心'
+    ]
+  };
+
+  const created = await postJson(JOBS_ENDPOINT, payload);
+  if (!created?.success || !created?.jobId) {
+    throw new Error(`Failed to create job: ${JSON.stringify(created)}`);
+  }
+  const jobId = String(created.jobId);
+  console.log('✅ Job created:', jobId);
+
+  for (let i = 0; i < 60; i += 1) {
+    await sleep(5000);
+    const status = await new Promise<any>((resolve, reject) => {
+      http.get(`${SERVER_URL}/api/analyze-images/jobs/${jobId}?includeResult=1`, (res: any) => {
+        let resData = '';
+        res.on('data', (chunk: any) => (resData += chunk));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(resData));
+          } catch (e) {
+            reject(new Error(`Failed to parse response: ${resData}`));
+          }
+        });
+      }).on('error', reject);
+    });
+
+    const st = status?.job?.status;
+    const stage = status?.job?.stage;
+    console.log(`  - Poll ${i + 1}: ${st}/${stage} partial=${!!status?.partialResult} result=${!!status?.result}`);
+
+    if (st === 'completed') {
+      console.log('✅ Job completed.');
+      return;
+    }
+    if (st === 'failed') {
+      throw new Error(`Job failed: ${status?.job?.errorMessage || 'unknown error'}`);
+    }
+    if (st === 'canceled') {
+      throw new Error('Job canceled.');
+    }
+  }
+
+  throw new Error('Job did not finish in time.');
+}
+
+runSmokeTest()
+  .then(async () => {
+    const base64Images: string[] = [];
+    for (const p of IMAGE_PATHS) {
+      if (fs.existsSync(p)) {
+        base64Images.push(await fileToBase64(p));
+      }
+    }
+    if (base64Images.length === 0) return;
+    await runJobsTest(base64Images);
+    console.log('\n🎉 Jobs Test Completed Successfully.');
+  })
+  .catch((err: any) => {
+    console.error('❌ Test Failed:', err);
+    process.exit(1);
+  });

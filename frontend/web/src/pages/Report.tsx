@@ -7,6 +7,7 @@ import { Settings, Download, ArrowLeft, Share2, PanelRightClose, PanelRightOpen,
 import { SettingsModal } from '../components/SettingsModal';
 import { PrintLayout } from '../components/PrintLayout';
 import { AcceptanceModal } from '../components/AcceptanceModal';
+import { StudyMethodsModal } from '../components/StudyMethodsModal';
 import { getAbilityInfoBySubject } from '../config/subjectConfig';
 
 interface ReportProps {
@@ -269,6 +270,7 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   };
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isStudyMethodsOpen, setIsStudyMethodsOpen] = useState(false);
   const [isAcceptanceOpen, setIsAcceptanceOpen] = useState(false); // 验收弹窗状态
   const [isPreviewOpen, setIsPreviewOpen] = useState(false); // 预览弹窗状态
   const [toastMsg, setToastMsg] = useState<string | null>(null); // Toast 状态
@@ -335,12 +337,16 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   const [canceling, setCanceling] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const jobStatusRef = useRef(jobStatus);
+  const jobStageRef = useRef(jobStage);
   useEffect(() => {
     jobStatusRef.current = jobStatus;
   }, [jobStatus]);
+  useEffect(() => {
+    jobStageRef.current = jobStage;
+  }, [jobStage]);
 
   const applyAnalyzeResultToExam = useCallback(
-    (result: any) => {
+    (result: any, markCompleted: boolean = true) => {
       const payload = result?.data;
       if (!payload) return;
 
@@ -439,8 +445,8 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         acceptanceQuiz: payload.acceptanceQuiz,
         job: {
           id: jobId,
-          status: 'completed',
-          stage: 'completed',
+          status: markCompleted ? 'completed' : jobStatusRef.current || 'running',
+          stage: markCompleted ? 'completed' : jobStageRef.current || 'extracting',
         },
       };
 
@@ -484,6 +490,9 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         const estSecs = Number(job?.estimateSeconds || 0) || 0;
         if (imgCount > 0) setJobImageCount(imgCount);
         if (estSecs > 0) setJobEstimateSeconds(estSecs);
+        if (j?.partialResult && !j?.result) {
+          applyAnalyzeResultToExam(j.partialResult, false);
+        }
         if (j?.result) {
           applyAnalyzeResultToExam(j.result);
           setLoadingState('completed', 'completed', '');
@@ -533,6 +542,10 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         if (t === 'progress') {
           const status = jobStatusRef.current || 'running';
           setLoadingState(status, String(payload?.stage || ''), String(payload?.message || ''));
+          return;
+        }
+        if (t === 'partial_result') {
+          applyAnalyzeResultToExam(payload?.result, false);
           return;
         }
         if (t === 'result') {
@@ -1346,6 +1359,13 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
 
             <div className="sidebar-divider" />
 
+            <button className="dock-btn rect-btn" onClick={() => { setIsSidebarOpen(false); setIsStudyMethodsOpen(true); }} title="学习方法">
+              <BookOpen size={20} />
+              <span>学习方法</span>
+            </button>
+
+            <div className="sidebar-divider" />
+
             <button 
               className="dock-btn rect-btn" 
               onClick={() => {
@@ -1428,6 +1448,9 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
           >
             <Calendar size={20} color="#64748b" />
           </button>
+          <button className="settings-btn" onClick={() => setIsStudyMethodsOpen(true)} title="学习方法">
+            <BookOpen size={20} color="#64748b" />
+          </button>
           <button className="settings-btn" onClick={() => setIsPreviewOpen(true)} title="导出/预览">
             <Download size={20} color="#64748b" />
           </button>
@@ -1466,9 +1489,15 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
             <div style={{ fontSize: 13, color: '#0f172a', fontWeight: 600 }}>
               {jobStage === 'queued'
                 ? '排队中…'
-                : jobStage === 'generating'
-                  ? '正在生成报告…'
-                  : '正在解析试卷…'}
+                : jobStage === 'extracting'
+                  ? '正在提取关键信息…'
+                  : jobStage === 'diagnosing'
+                    ? '正在生成核心结论…'
+                    : jobStage === 'practicing'
+                      ? '正在生成训练与验收…'
+                      : jobStage === 'merging'
+                        ? '正在整合报告…'
+                        : '正在分析中…'}
             </div>
             <div style={{ fontSize: 12, color: '#64748b' }}>
               {jobMessage ||
@@ -1556,6 +1585,12 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         onUpdateTrialAccessCode={setTrialAccessCode}
         llmConfig={llmConfig}
         onUpdateLlmConfig={setLlmConfig}
+      />
+
+      <StudyMethodsModal
+        isOpen={isStudyMethodsOpen}
+        onClose={() => setIsStudyMethodsOpen(false)}
+        methods={studyCoach.methods}
       />
 
       <div className={`report-content ${showIntro ? 'intro' : ''}`}>

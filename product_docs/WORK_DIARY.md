@@ -50,6 +50,19 @@
     *   冒烟测试脚本修正了 problems 为对象时的校验逻辑（兼容 `证据/置信度/最短改法` 字段）。
 3.  **性能粗检**:
     *   构建产物体积：主 JS ~305KB（gzip ~98KB），CSS ~35KB（gzip ~7.6KB）。
+4.  **关键功能修复（用户反馈回归）**:
+    *   错题本内容与当前试卷分析结果关联（使用真实考试数据生成错题条目）。
+    *   报告页快捷指令补齐点击逻辑：压缩 20 分钟计划、生成家长沟通话术、打印错题本（本周）。
+    *   打印“错题本（本周）”修复误跳到试卷分析报告的问题。
+    *   报告页打印/保存按钮样式优化。
+    *   “进入验收”按钮补齐题目缺失时的自动生成兜底逻辑与提示反馈。
+5.  **同步与上线**:
+    *   本地修改已推送到 GitHub：`https://github.com/litongxue7788/exam-analysis-helper`。
+    *   ECS（`/opt/exam-analysis-helper`）已完成 `git pull`，后端 `npm ci && npm run build` 后使用 `pm2 restart exam-helper-backend` 重启生效。
+    *   前端 `npm ci && npm run build` 生成 `frontend/web/dist`，Nginx `root` 指向 dist 并 `systemctl reload nginx` 生效。
+6.  **问题与处理**:
+    *   终端被 Git pager（分页器）卡住：通过禁用 pager / 直接输出方式解决。
+    *   服务器工作区出现 `package-lock.json` 变更：使用 `git restore` 清理后再拉取更新，避免 pull 冲突。
 
 ### ⚠️ 遗留问题 / 风险
 *   需补做“长时间运行多次分析”后的卡顿/内存观察，以及多浏览器最终人工确认。
