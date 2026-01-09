@@ -68,8 +68,12 @@ cd backend
 npm install
 # 2. 配置环境变量 (复制 .env.example 为 .env 并填入 Key)
 cp .env.example .env
-# 3. 启动服务
-npm run dev
+# 3. 编译并启动 (推荐，更稳定)
+npm run build
+node dist/server.js
+
+# 或者使用开发模式 (可能存在缓存问题)
+# npm run dev
 ```
 
 ### 3. 前端启动

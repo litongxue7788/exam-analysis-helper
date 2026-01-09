@@ -171,27 +171,40 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
     activeFilter === 'all' ? true : activeFilter === 'unsolved' ? !e.isResolved : e.isResolved
   );
 
-  const handleGenerateSimilar = (errorId: string) => {
+  const handleGenerateSimilar = async (errorId: string) => {
     if (generatingId) return;
+    const item = errors.find(e => e.id === errorId);
+    if (!item) return;
+
     setGeneratingId(errorId);
     
-    // 模拟 API 调用延迟
-    setTimeout(() => {
-      setSimilarQuestions(prev => ({
-        ...prev,
-        [errorId]: [
-          {
-            question: '变式题1：已知 x, y 互为相反数，m, n 互为倒数，求 (x+y)^2024 - mn 的值。',
-            answer: '-1'
-          },
-          {
-            question: '变式题2：若 |a| = 5, |b| = 3，且 a < b，求 a - b 的值。',
-            answer: '-8 或 -2'
-          }
-        ]
-      }));
+    try {
+      const res = await fetch('/api/generate-similar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          questionText: item.questionText,
+          knowledgePoints: item.knowledgePoints,
+          count: 2
+        })
+      });
+      const json = await res.json();
+      
+      if (json.success && Array.isArray(json.data)) {
+        setSimilarQuestions(prev => ({
+          ...prev,
+          [errorId]: json.data
+        }));
+      } else {
+        console.error('生成失败:', json.errorMessage);
+        alert('生成失败: ' + (json.errorMessage || '服务未响应'));
+      }
+    } catch (err) {
+      console.error('网络请求失败:', err);
+      alert('网络连接失败，请检查后端服务');
+    } finally {
       setGeneratingId(null);
-    }, 1500);
+    }
   };
 
   const handleAddTag = (errorId: string) => {

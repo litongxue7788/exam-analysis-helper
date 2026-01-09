@@ -9,6 +9,8 @@ import { AnalyzeExamRequest, AnalyzeExamResponse } from './api/interface';
 import { USER_PROMPT_TEMPLATE, getGradeLevelInstruction, getSubjectPracticeInstruction, getSubjectAnalysisInstruction } from './llm/prompts';
 import { llmService } from './llm/service';
 
+
+
 // =================================================================================
 // 真正的 Web 后端服务
 // =================================================================================
@@ -1722,6 +1724,68 @@ app.post('/api/generate-practice', async (req, res) => {
 
   } catch (error: any) {
     console.error('❌ 生成训练题失败:', error);
+    res.status(500).json({ success: false, errorMessage: error.message });
+  }
+});
+
+// 2.7 错题本-举一反三接口 (V3.1)
+app.post('/api/generate-similar', async (req, res) => {
+  try {
+    const { questionText, knowledgePoints, count, provider } = req.body;
+    const modelProvider = (provider as any) || process.env.DEFAULT_PROVIDER || 'doubao';
+    
+    console.log(`\n🧩 收到举一反三生成请求: ${knowledgePoints || '综合'} - ${questionText?.slice(0, 20)}...`);
+
+    const prompt = `
+请针对以下原题，生成 ${count || 2} 道“举一反三”的变式题。
+
+【原题】：${questionText || '未提供，请基于知识点生成'}
+【知识点】：${Array.isArray(knowledgePoints) ? knowledgePoints.join(', ') : (knowledgePoints || '综合')}
+
+要求：
+1. 考察核心知识点必须一致，但题目形式或数字需要变化。
+2. 难度可以微调（一道稍易，一道稍难）。
+3. 必须提供标准答案。
+4. 输出为严格的 JSON 格式。
+
+输出 JSON 格式（不要包含 Markdown 代码块）：
+[
+  { "question": "变式题1：题目内容...", "answer": "答案内容" },
+  { "question": "变式题2：题目内容...", "answer": "答案内容" }
+]
+`.trim();
+
+    const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 0);
+    const rawContent = await withTimeout(
+        llmService.generateAnalysis(prompt, modelProvider as any, { temperature: 0.6 }),
+        timeoutMs,
+        '变式题生成超时'
+    );
+    
+    let parsed = parseLlmJson(rawContent);
+    if (!parsed.ok) {
+       console.warn('⚠️ JSON 解析失败，尝试修复...');
+       const repairPrompt = `请修复以下 JSON，只输出 JSON 本体：\n${rawContent}`;
+       const repaired = await withTimeout(
+         llmService.generateAnalysis(repairPrompt, modelProvider as any, { temperature: 0.1 }),
+         timeoutMs,
+         '修复超时'
+       );
+       parsed = parseLlmJson(repaired);
+    }
+
+    if (!parsed.ok) {
+        throw new Error('生成失败，无法解析为 JSON');
+    }
+    
+    // 确保返回的是数组
+    const data = Array.isArray(parsed.value) ? parsed.value : 
+                 (parsed.value.questions ? parsed.value.questions : [parsed.value]);
+
+    res.json({ success: true, data });
+
+  } catch (error: any) {
+    console.error('❌ 生成变式题失败:', error);
     res.status(500).json({ success: false, errorMessage: error.message });
   }
 });

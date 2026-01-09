@@ -3,7 +3,7 @@
 // =================================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, Download, ArrowLeft, Share2, PanelRightClose, PanelRightOpen, GripHorizontal, BookOpen, LayoutDashboard, Calendar, X, Menu, ArrowRightLeft } from 'lucide-react';
+import { Settings, Download, ArrowLeft, Share2, PanelRightClose, PanelRightOpen, GripHorizontal, BookOpen, LayoutDashboard, Calendar, X, Menu, ArrowRightLeft, GraduationCap } from 'lucide-react';
 import { SettingsModal } from '../components/SettingsModal';
 import { PrintLayout } from '../components/PrintLayout';
 import { AcceptanceModal } from '../components/AcceptanceModal';
@@ -1449,7 +1449,7 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
             <Calendar size={20} color="#64748b" />
           </button>
           <button className="settings-btn" onClick={() => setIsStudyMethodsOpen(true)} title="学习方法">
-            <BookOpen size={20} color="#64748b" />
+            <GraduationCap size={20} color="#64748b" />
           </button>
           <button className="settings-btn" onClick={() => setIsPreviewOpen(true)} title="导出/预览">
             <Download size={20} color="#64748b" />
