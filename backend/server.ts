@@ -1384,6 +1384,8 @@ let currentDay = getLocalDayKey(new Date());
 
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api')) return next();
+  if (String(process.env.DISABLE_RATE_LIMIT || '').trim() === '1') return next();
+  if (String(req.method || '').toUpperCase() === 'OPTIONS') return next();
 
   const today = getLocalDayKey(new Date());
   if (today !== currentDay) {
@@ -1404,6 +1406,8 @@ app.use((req, res, next) => {
 
   const forwarded = String(req.headers['x-forwarded-for'] || '');
   const ip = (forwarded.split(',')[0] || req.ip || '').trim();
+  const method = String(req.method || '').toUpperCase();
+  const isReadOnly = method === 'GET' || method === 'HEAD';
 
   const limitWindowMs = 60 * 1000;
   const now = Date.now();
@@ -1455,7 +1459,7 @@ app.use((req, res, next) => {
       res.setHeader('Retry-After', '60');
       return res.status(429).json({ success: false, errorMessage: '请求过于频繁，请稍后再试' });
     }
-    if (!dailyCheck(codeDailyKey, perCodePerDay)) {
+    if (!isReadOnly && !dailyCheck(codeDailyKey, perCodePerDay)) {
       return buildDailyQuotaResponse();
     }
   }
@@ -1467,7 +1471,7 @@ app.use((req, res, next) => {
       res.setHeader('Retry-After', '60');
       return res.status(429).json({ success: false, errorMessage: '请求过于频繁，请稍后再试' });
     }
-    if (!dailyCheck(ipDailyKey, perIpPerDay)) {
+    if (!isReadOnly && !dailyCheck(ipDailyKey, perIpPerDay)) {
       return buildDailyQuotaResponse();
     }
   }

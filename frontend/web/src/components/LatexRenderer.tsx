@@ -8,139 +8,145 @@ export const LatexRenderer = ({ text }: { text: string }) => {
   useEffect(() => {
     if (!containerRef.current) return;
     
-    // 0. 启发式修复：针对 LLM 常见的反斜杠丢失问题进行补全
-    // 这里的正则要非常小心，避免误伤正常文本
-    // 比如 "imes" -> "\times", "rac{" -> "\frac{", "pi" -> "\pi" (当它单独出现或在公式语境下)
-    // 考虑到我们无法完美区分公式边界，我们采取一种激进但通常安全的策略：
-    // 如果看到 `imes `，大概率是 `\times `；如果看到 `rac{`，几乎必然是 `\frac{`
-    
-    const controlCharsRe = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
-
+    // 0. 全局预处理：修复常见的非标准 LaTeX 和 LLM 缩写
+    // - 将 \f{ 替换为 \frac{ (处理大模型简写)
+    // - 将 \f\frac 替换为 \frac (处理重复前缀)
+    // - 将 \div 这种已经是命令的保留
     let processed = String(text || '')
-       .replace(controlCharsRe, '')
-       .replace(/\\f(?=\\)/g, '')
-       // 修复 \times (乘号) - 移除 \b，改用非字母判定，兼容 3.14imes15
-       .replace(/([^a-zA-Z\\]|^)imes([^a-zA-Z]|$)/g, '$1\\times$2')
-       
-       // 修复 \frac (分数) - 移除对前导字符的依赖，强行修复 rac{
-       .replace(/\\?rac\{/g, '\\frac{')
-       
-       // 修复 \pi (圆周率) - 允许数字紧跟 (2pi)
-       .replace(/([^a-zA-Z\\]|^)pi([^a-zA-Z]|$)/g, '$1\\pi$2')
-       
-       // 修复 \div (除号)
-       .replace(/([^a-zA-Z\\]|^)div([^a-zA-Z]|$)/g, '$1\\div$2')
-       
-       // 修复 \Delta
-       .replace(/([^a-zA-Z\\]|^)Delta([^a-zA-Z]|$)/g, '$1\\Delta$2')
-       
-       // 修复 \sqrt
-       .replace(/([^a-zA-Z\\]|^)sqrt\b/g, '$1\\sqrt')
-       
-       // 修复 \approx
-       .replace(/([^a-zA-Z\\]|^)approx\b/g, '$1\\approx')
-       
-       // 修复 \le, \ge
-       .replace(/([^a-zA-Z\\]|^)le\b/g, '$1\\le')
-       .replace(/([^a-zA-Z\\]|^)ge\b/g, '$1\\ge');
-       
-    // 1. 分割逻辑
-    // 兼容 \( ... \) 和 \[ ... \] 以及 \\( ... \\) 和 \\[ ... \\]
-    // 还有 $$ ... $$ 和 $ ... $
-    const parts = processed.split(/(\\\\\[.*?\\\\\]|\\\[.*?\\\]|\\\\\(.*?\\\\\)|\\\(.*?\\\)|(?:\$\$[\s\S]*?\$\$)|(?:\$[^\$]*?\$))/s);
+       .replace(/\u0000/g, '') // 去除空字符
+       // 修复 LLM 输出的奇怪 \f 前缀
+       .replace(/\\f\s*\\frac/g, '\\frac') // \f\frac -> \frac
+       .replace(/\\f\{/g, '\\frac{')       // \f{...} -> \frac{...}
+       .replace(/\\f\s*([0-9a-zA-Z])/g, '\\frac $1') // \f3 -> \frac 3 (极少见但防御一下)
+       // 修复中文引号可能导致的干扰（视情况而定，这里暂不处理）
+       ;
+
+    // 1. 智能分段逻辑
+    // 目标：把字符串切分成 [中文/普通文本] + [公式片段] + [中文/普通文本]...
+    // 策略：
+    // - 识别明确的公式标记：$...$, $$...$$, \(...\), \[...\]
+    // - 识别裸露的 LaTeX 命令串：例如 "x = \frac{1}{2}" 这种没包裹的情况
+    // - 利用中文作为自然分隔符
+
+    // 如果文本中包含明确的定界符，优先使用定界符分割
+    const hasDelimiters = /[\$\\]/.test(processed) && /(\$\$|\$|\\\(|\\\[)/.test(processed);
     
+    let segments: { content: string; isMath: boolean; displayMode: boolean }[] = [];
+
+    if (hasDelimiters) {
+        // 使用定界符分割
+        const parts = processed.split(/(\\\\\[.*?\\\\\]|\\\\[.*?\\\\]|\\\\\(.*?\\\\\)|\\\(.*?\\\)|(?:\$\$[\s\S]*?\$\$)|(?:\$[^\$]+?\$))/s);
+        segments = parts.map(part => {
+            if (
+                (part.startsWith('\\[') && part.endsWith('\\]')) || 
+                (part.startsWith('\\\[') && part.endsWith('\\\]')) ||
+                (part.startsWith('$$') && part.endsWith('$$'))
+            ) {
+                return {
+                    content: part.replace(/^(\\\\\[|\\\\[|\$\$)\s*/, '').replace(/\s*(\\\\\]|\\\\]|\$\$)$/, ''),
+                    isMath: true,
+                    displayMode: true
+                };
+            } else if (
+                (part.startsWith('\\(') && part.endsWith('\\)')) || 
+                (part.startsWith('\\\\(') && part.endsWith('\\\\)')) ||
+                (part.startsWith('$') && part.endsWith('$'))
+            ) {
+                return {
+                    content: part.replace(/^(\\\\\[|\\\(|\$)\s*/, '').replace(/\s*(\\\\\]|\\\)|\$)$/, ''),
+                    isMath: true,
+                    displayMode: false
+                };
+            } else {
+                return { content: part, isMath: false, displayMode: false };
+            }
+        });
+    } else {
+        // 没有定界符的“裸”文本，尝试启发式分割
+        // 正则解释：
+        // 匹配一段连续的：
+        // 1. 以反斜杠开头的命令 (e.g. \frac{1}{2}, \pi)
+        // 2. 数学运算符 (=, +, <, >)
+        // 3. 包含数字和字母的组合，且周围没有中文
+        // 这是一个难点，为了安全起见，我们采用“非中文片段识别法”
+        
+        // 简单方案：按中文（及中文标点）切分，剩下的片段如果包含 LaTeX 特征字符（\ 或 = 或 ^ 或 _），则尝试渲染
+        const chunks = processed.split(/([\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef]+)/);
+        segments = chunks.map(chunk => {
+            // 如果是中文，直接文本
+            if (/[\u4e00-\u9fa5]/.test(chunk)) {
+                return { content: chunk, isMath: false, displayMode: false };
+            }
+            // 如果包含明显的 LaTeX 特征
+            if (/\\[a-zA-Z]+|[\^_{}=<>]/.test(chunk)) {
+                // 进一步清洗：去掉可能的前后多余空格，但保留中间的
+                return { content: chunk, isMath: true, displayMode: false };
+            }
+            // 否则当作普通文本（例如纯数字或英文单词）
+            return { content: chunk, isMath: false, displayMode: false };
+        });
+    }
+
+    // 2. 渲染
     containerRef.current.innerHTML = '';
     
-    parts.forEach(part => {
-      let displayMode = false;
-      let math = '';
-      let isMath = false;
+    segments.forEach(seg => {
+        if (!seg.content) return;
 
-      // 匹配 \[ ... \] 或 \\[ ... \\] 或 $$ ... $$
-      if (
-        (part.startsWith('\\[') && part.endsWith('\\]')) || 
-        (part.startsWith('\\\\[') && part.endsWith('\\\\]')) ||
-        (part.startsWith('$$') && part.endsWith('$$'))
-      ) {
-        displayMode = true;
-        isMath = true;
-        // 去掉首尾标记
-        math = part
-          .replace(/^(\\\\\[|\\\[|\$\$)\s*/, '')
-          .replace(/\s*(\\\\\]|\\\]|\$\$)$/, '');
-      }
-      // 匹配 \( ... \) 或 \\( ... \\) 或 $ ... $
-      else if (
-        (part.startsWith('\\(') && part.endsWith('\\)')) || 
-        (part.startsWith('\\\\(') && part.endsWith('\\\\)')) ||
-        (part.startsWith('$') && part.endsWith('$'))
-      ) {
-        displayMode = false;
-        isMath = true;
-        math = part
-          .replace(/^(\\\\\(|\\\(|\$)\s*/, '')
-          .replace(/\s*(\\\\\)|\\\)|\$)$/, '');
-      }
-
-      if (isMath) {
-        // 2. 公式内部再次进行深度清洗（针对公式内部的反斜杠丢失）
-        // 例如： 3 imes 4 -> 3 \times 4
-        let cleanMath = math
-           .replace(controlCharsRe, '')
-           .replace(/\\f(?=\\)/g, '')
-           .replace(/([^a-zA-Z\\]|^)imes([^a-zA-Z]|$)/g, '$1\\times$2')
-           .replace(/\\?rac\{/g, '\\frac{')
-           .replace(/([^a-zA-Z\\]|^)div([^a-zA-Z]|$)/g, '$1\\div$2')
-           .replace(/([^a-zA-Z\\]|^)pi([^a-zA-Z]|$)/g, '$1\\pi$2')
-           .replace(/([^a-zA-Z\\]|^)cdot([^a-zA-Z]|$)/g, '$1\\cdot$2')
-           // 修复 ^2, ^3 前面可能出现的空格问题
-           .replace(/(\w)\s+\^/g, '$1^')
-           .replace(/[−–—]/g, '-')
-           .replace(/×/g, '\\times')
-           .replace(/÷/g, '\\div');
-
-        const span = document.createElement(displayMode ? 'div' : 'span');
-        try {
-          katex.render(cleanMath, span, { 
-            throwOnError: false, 
-            displayMode,
-            output: 'html',
-            trust: true
-          });
-        } catch (e) {
-          span.innerText = part;
-        }
-        containerRef.current?.appendChild(span);
-      } else {
-        const tokenParts = String(part || '').split(/(\\frac\{[^}]+\}\{[^}]+\}|\\sqrt\{[^}]+\}|\\(?:times|div|pi|cdot|Delta|approx|le|ge)\b)/g);
-        tokenParts.forEach((t) => {
-          if (!t) return;
-          const isToken = t.startsWith('\\');
-          if (!isToken) {
+        if (seg.isMath) {
             const span = document.createElement('span');
-            span.innerText = t;
-            containerRef.current?.appendChild(span);
-            return;
-          }
+            // 二次清洗公式内容
+            let math = seg.content
+                // 1. 修复 \f\frac 这种怪异组合 (大模型幻觉)
+                .replace(/\\f\s*(\\frac)/g, '$1') 
+                .replace(/\\f\s*(\{)/g, '\\frac$1') // \f{...} -> \frac{...}
+                
+                // 2. 修复 \oldSymbol{...} -> ...
+                .replace(/\\oldSymbol\{([^}]+)\}/g, '$1')
+                .replace(/\\oldstylenums\{([^}]+)\}/g, '$1')
 
-          const span = document.createElement('span');
-          try {
-            katex.render(
-              t
-                .replace(controlCharsRe, '')
-                .replace(/\\f(?=\\)/g, '')
-                .replace(/\\?rac\{/g, '\\frac{'),
-              span,
-              { throwOnError: false, displayMode: false, output: 'html', trust: true }
-            );
-          } catch (e) {
-            span.innerText = t;
-          }
-          containerRef.current?.appendChild(span);
-        });
-      }
+                // 3. 修复丢失反斜杠的 imes (乘号)
+                // 匹配规则：数字/小数点/括号 后面紧跟 imes，或者 imes 后面紧跟数字
+                .replace(/([0-9.)])\s*imes\b/g, '$1\\times ')
+                .replace(/\bimes\s*([0-9.(])/g, '\\times $1')
+                
+                // 4. 修复丢失反斜杠的 div (除号)
+                .replace(/([0-9.)])\s*div\b/g, '$1\\div ')
+                .replace(/\bdiv\s*([0-9.(])/g, '\\div $1')
+
+                // 5. 其他常规清理
+                .replace(/\\?rac\{/g, '\\frac{')
+                .replace(/×/g, '\\times')
+                .replace(/÷/g, '\\div');
+            
+            try {
+                 katex.render(math, span, {
+                     throwOnError: true, // 改为 true，主动捕获错误以便降级
+                     displayMode: seg.displayMode,
+                     output: 'html',
+                     strict: false
+                 });
+                 containerRef.current?.appendChild(span);
+             } catch (e) {
+                 // 兜底：渲染失败时，回退为显示清洗后的纯文本，而不是红色报错
+                 // 同时尝试去除 LaTeX 命令残留，让文本更可读
+                 span.textContent = math
+                    .replace(/\\frac\{([^}]+)\}\{([^}]+)\}/g, '$1/$2') // \frac{a}{b} -> a/b
+                    .replace(/\\times/g, '×')
+                    .replace(/\\div/g, '÷')
+                    .replace(/\\pi/g, 'π')
+                    .replace(/\\[a-zA-Z]+/g, ''); // 去掉其他所有命令
+                 containerRef.current?.appendChild(span);
+             }
+        } else {
+            // 普通文本
+            const span = document.createElement('span');
+            span.textContent = seg.content;
+            containerRef.current?.appendChild(span);
+        }
     });
+
   }, [text]);
 
-  return <div ref={containerRef} style={{ display: 'inline' }} />;
+  return <div ref={containerRef} style={{ display: 'inline-block' }} />;
 };
