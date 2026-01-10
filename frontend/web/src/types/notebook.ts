@@ -9,32 +9,17 @@ export type ErrorType = 'calculation' | 'concept' | 'reading' | 'application' | 
 
 export interface ErrorItem {
   id: string;
-  // 题目来源信息
   sourceExamId: string;
   sourceExamName: string;
-  createTime: string; // ISO Date string
-
-  // 题目内容
-  questionImage?: string; // 题目截图 URL
-  questionText?: string;  // 题目文本 (OCR结果)
-  
-  // 错误分析
-  studentAnswer?: string; // 学生错误答案
-  correctAnswer?: string; // 正确答案
-  analysis?: string;      // 错误原因分析
-  
-  // 结构化标签
-  knowledgePoints: string[]; // 关联知识点
-  errorType: ErrorType;      // 错误类型分类
-  tags: ErrorTag[];          // 自定义标签
-  
-  // 掌握程度 tracking
-  masteryLevel: number;      // 0-100, 初始通常较低
-  reviewCount: number;       // 复习次数
-  lastReviewDate?: string;   // 上次复习时间
-  
-  // 状态
-  isResolved: boolean;       // 是否已攻克
+  createTime: string;
+  questionText: string;
+  knowledgePoints: string[];
+  errorType: 'calculation' | 'reading' | 'concept' | 'application' | 'other';
+  tags: string[];
+  masteryLevel: number; // 0-100
+  reviewCount: number;
+  lastReviewDate?: string;
+  isResolved: boolean;
 }
 
 export interface ErrorLedgerStats {

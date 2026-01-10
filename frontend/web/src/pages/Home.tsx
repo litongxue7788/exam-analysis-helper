@@ -783,6 +783,9 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         if (!response.ok || json?.success === false) {
           const err: any = new Error(json?.errorMessage || response.statusText || '分析失败');
           err.status = response.status;
+          err.errorCode = json?.errorCode;
+          err.resetAt = json?.resetAt;
+          err.retryAfterSeconds = json?.retryAfterSeconds;
           throw err;
         }
 
@@ -889,6 +892,20 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
       }
 
       if (status === 429 || msg.includes('请求过于频繁') || msg.includes('额度')) {
+        const code = String((error as any)?.errorCode || '').trim();
+        const resetAtRaw = String((error as any)?.resetAt || '').trim();
+        if (code === 'DAILY_QUOTA_EXCEEDED' && resetAtRaw) {
+          const d = new Date(resetAtRaw);
+          if (Number.isFinite(d.getTime())) {
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const dd = String(d.getDate()).padStart(2, '0');
+            const hh = String(d.getHours()).padStart(2, '0');
+            const mm = String(d.getMinutes()).padStart(2, '0');
+            showToast(`今日使用额度已用完，将于 ${y}-${m}-${dd} ${hh}:${mm} 重置`);
+            return;
+          }
+        }
         showToast(msg || '请求过于频繁，请稍后再试。');
         return;
       }

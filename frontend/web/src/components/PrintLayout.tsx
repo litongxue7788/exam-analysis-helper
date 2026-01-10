@@ -19,6 +19,9 @@ export const PrintLayout: React.FC<PrintLayoutProps> = ({ data }) => {
   const problems = modules?.problems || [];
   const adviceContent = modules?.advice?.content || [];
   const adviceHabit = modules?.advice?.habit || [];
+  const studyMethods = data?.studyMethods;
+  const methods = Array.isArray(studyMethods?.methods) ? studyMethods.methods : [];
+  const weekPlan = Array.isArray(studyMethods?.weekPlan) ? studyMethods.weekPlan : [];
   
   const coerceText = (v: any): string => {
     if (typeof v === 'string') return v;
@@ -105,6 +108,32 @@ export const PrintLayout: React.FC<PrintLayoutProps> = ({ data }) => {
             </div>
         )}
       </div>
+
+      {(methods.length > 0 || weekPlan.length > 0) && (
+        <div className="print-section">
+          <h2>五、学习方法推荐</h2>
+          {methods.length > 0 && (
+            <div className="print-subsection">
+              <h3>更高效的做法</h3>
+              <ul className="print-list">
+                {methods.map((item: string, i: number) => (
+                  <li key={i}>{coerceText(item)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {weekPlan.length > 0 && (
+            <div className="print-subsection" style={{ marginTop: 10 }}>
+              <h3>7 天微计划</h3>
+              <ul className="print-list">
+                {weekPlan.map((item: string, i: number) => (
+                  <li key={i}>{coerceText(item)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
       
       <div className="print-footer">
         <p>生成时间：{new Date().toLocaleDateString()}</p>

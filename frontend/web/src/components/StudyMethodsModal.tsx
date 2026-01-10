@@ -5,10 +5,35 @@ interface StudyMethodsModalProps {
   isOpen: boolean;
   onClose: () => void;
   methods: string[];
+  onSyncToReport?: (methods: string[]) => void;
 }
 
-export const StudyMethodsModal: React.FC<StudyMethodsModalProps> = ({ isOpen, onClose, methods }) => {
+export const StudyMethodsModal: React.FC<StudyMethodsModalProps> = ({ isOpen, onClose, methods, onSyncToReport }) => {
   if (!isOpen) return null;
+
+  const copyText = (text: string) => {
+    const v = String(text || '');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(v).catch(() => {});
+      return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = v;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      document.execCommand('copy');
+    } catch {}
+    document.body.removeChild(textarea);
+  };
+
+  const copyAll = () => {
+    if (!methods.length) return;
+    copyText(methods.map((m, i) => `${i + 1}. ${m}`).join('\n'));
+  };
 
   return (
     <div className="settings-overlay" onClick={(e) => {
@@ -42,6 +67,18 @@ export const StudyMethodsModal: React.FC<StudyMethodsModalProps> = ({ isOpen, on
               }}>
                 基于你的试卷错因，为你定制了以下高效学习策略：
               </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="op-btn-secondary" onClick={copyAll} style={{ flex: 1, justifyContent: 'center' }}>
+                  复制全部
+                </button>
+                <button
+                  className="op-btn-secondary"
+                  onClick={() => onSyncToReport?.(methods)}
+                  style={{ flex: 1, justifyContent: 'center' }}
+                >
+                  同步到报告
+                </button>
+              </div>
               {methods.map((method, index) => (
                 <div key={index} style={{ 
                   display: 'flex', 
@@ -66,9 +103,16 @@ export const StudyMethodsModal: React.FC<StudyMethodsModalProps> = ({ isOpen, on
                   }}>
                     {index + 1}
                   </div>
-                  <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.5, flex: 1 }}>
                     {method}
                   </div>
+                  <button
+                    className="op-btn-secondary"
+                    style={{ padding: '6px 10px', fontSize: 12, borderRadius: 8, flexShrink: 0 }}
+                    onClick={() => copyText(method)}
+                  >
+                    复制
+                  </button>
                 </div>
               ))}
             </div>
@@ -76,9 +120,18 @@ export const StudyMethodsModal: React.FC<StudyMethodsModalProps> = ({ isOpen, on
         </div>
 
         <div className="settings-footer">
-          <button className="op-btn-primary" onClick={onClose} style={{ width: '100%', justifyContent: 'center' }}>
-            我知道了
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="op-btn-secondary"
+              onClick={() => onSyncToReport?.(methods)}
+              style={{ flex: 1, justifyContent: 'center' }}
+            >
+              同步到报告
+            </button>
+            <button className="op-btn-primary" onClick={onClose} style={{ flex: 1, justifyContent: 'center' }}>
+              我知道了
+            </button>
+          </div>
         </div>
       </div>
     </div>

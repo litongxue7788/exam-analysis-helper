@@ -1,10 +1,16 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const https = require('https');
 
-const SERVER_URL = 'http://localhost:3002';
+const SERVER_URL = String(process.env.SERVER_URL || '').trim() || `http://localhost:${Number(process.env.PORT || 3002)}`;
+const SERVER = new URL(SERVER_URL);
+const transport = SERVER.protocol === 'https:' ? https : http;
 const API_ENDPOINT = '/api/analyze-images';
 const JOBS_ENDPOINT = '/api/analyze-images/jobs';
+const GENERATE_SIMILAR_ENDPOINT = '/api/generate-similar';
+const GENERATE_PRACTICE_ENDPOINT = '/api/generate-practice';
+const ANALYZE_EXAM_ENDPOINT = '/api/analyze-exam';
 
 // Image paths provided by user
 const IMAGE_PATHS = [
@@ -24,9 +30,9 @@ async function fileToBase64(filePath: string): Promise<string> {
 function postJson(endpoint: string, data: any): Promise<any> {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(data);
-    const req = http.request({
-      hostname: 'localhost',
-      port: 3002,
+    const req = transport.request({
+      hostname: SERVER.hostname,
+      port: SERVER.port ? Number(SERVER.port) : (SERVER.protocol === 'https:' ? 443 : 80),
       path: endpoint,
       method: 'POST',
       headers: {
@@ -50,13 +56,31 @@ function postJson(endpoint: string, data: any): Promise<any> {
   });
 }
 
+function getJson(urlOrPath: string): Promise<any> {
+  const url = String(urlOrPath || '');
+  const full = url.startsWith('http://') || url.startsWith('https://') ? url : `${SERVER_URL}${url.startsWith('/') ? '' : '/'}${url}`;
+  return new Promise((resolve, reject) => {
+    transport.get(full, (res: any) => {
+      let resData = '';
+      res.on('data', (chunk: any) => (resData += chunk));
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(resData));
+        } catch (e) {
+          reject(new Error(`Failed to parse response: ${resData}`));
+        }
+      });
+    }).on('error', reject);
+  });
+}
+
 async function sleep(ms: number) {
   await new Promise((r) => setTimeout(r, ms));
 }
 
 function checkHealth(): Promise<void> {
   return new Promise((resolve, reject) => {
-    http.get(SERVER_URL, (res: any) => {
+    transport.get(SERVER_URL, (res: any) => {
       if (res.statusCode === 200) resolve();
       else reject(new Error(`Status ${res.statusCode}`));
     }).on('error', reject);
@@ -173,6 +197,74 @@ async function runSmokeTest() {
   }
 }
 
+function looksLikeMath(text: string): boolean {
+  const t = String(text || '');
+  if (/[=√×÷+\-]/.test(t)) return true;
+  if (/\b(x|y|k)\b/i.test(t)) return true;
+  if (/(方程|函数|不等式|一次函数|二次函数|坐标|几何|面积|体积|周长|角度|分数|小数|求解|解方程)/.test(t)) return true;
+  if (/\d+\s*(\+|\-|\*|×|\/|÷)\s*\d+/.test(t)) return true;
+  return false;
+}
+
+async function runAuxApiTests() {
+  console.log('\n🚀 Starting Aux API Tests: Similar / Practice / AnalyzeExam');
+
+  // 1) /api/generate-similar (语文约束)
+  const similarCn = await postJson(GENERATE_SIMILAR_ENDPOINT, {
+    subject: '语文',
+    grade: '三年级',
+    knowledgePoints: ['字词拼写（部件结构混淆）'],
+    questionText: '下列词语书写正确的一项是（ ）A. 绿毯 B. 毛毡 C. 毽球',
+    count: 2,
+    provider: 'doubao',
+  });
+  if (!similarCn?.success || !Array.isArray(similarCn?.data) || similarCn.data.length === 0) {
+    throw new Error(`generate-similar(语文) failed: ${JSON.stringify(similarCn)}`);
+  }
+  const anyMath = similarCn.data.some((x: any) => looksLikeMath(String(x?.question || '')));
+  console.log(`✅ generate-similar(语文): ${similarCn.data.length} items, mathLeak=${anyMath ? '❌' : '✅'}`);
+  if (anyMath) {
+    throw new Error('generate-similar(语文) returned math-like content');
+  }
+
+  // 2) /api/generate-practice (专项训练)
+  const practice = await postJson(GENERATE_PRACTICE_ENDPOINT, {
+    subject: '语文',
+    grade: '三年级',
+    weakPoint: '字词拼写（部件结构混淆）',
+    wrongQuestion: '绿毯/毛毡/毽球',
+    provider: 'doubao',
+  });
+  if (!practice?.success || !practice?.data) {
+    throw new Error(`generate-practice failed: ${JSON.stringify(practice)}`);
+  }
+  const questions = Array.isArray(practice?.data?.questions) ? practice.data.questions : [];
+  console.log(`✅ generate-practice: section="${practice?.data?.sectionName || ''}" q=${questions.length}`);
+  if (!practice?.data?.sectionName || questions.length === 0) {
+    throw new Error('generate-practice returned incomplete structure');
+  }
+
+  // 3) /api/analyze-exam (表格/结构化分析链路)
+  const analyzeExam = await postJson(ANALYZE_EXAM_ENDPOINT, {
+    student: { name: '小明', grade: '七年级', className: '1班' },
+    exam: { name: '冒烟测试卷', subject: '数学' },
+    score: {
+      totalScore: 80,
+      fullScore: 100,
+      classRank: 10,
+      studentCount: 50,
+      questionScores: { 1: 0 },
+    },
+    questions: [{ no: 1, type: '选择题', fullScore: 4, text: '解方程：x/3+2=(2x-1)/4' }],
+    classStats: { classAverage: 75, questionAverages: { 1: 2.5 } },
+    modelProvider: 'doubao',
+  });
+  if (!analyzeExam?.success || !analyzeExam?.data) {
+    throw new Error(`analyze-exam failed: ${JSON.stringify(analyzeExam)}`);
+  }
+  console.log(`✅ analyze-exam: subject="${analyzeExam?.data?.subject || ''}" examName="${analyzeExam?.data?.examName || ''}"`);
+}
+
 async function runJobsTest(base64Images: string[]) {
   console.log('\n🚀 Starting Jobs Test: Analyze Images Job + Optional OCR');
 
@@ -195,19 +287,7 @@ async function runJobsTest(base64Images: string[]) {
 
   for (let i = 0; i < 60; i += 1) {
     await sleep(5000);
-    const status = await new Promise<any>((resolve, reject) => {
-      http.get(`${SERVER_URL}/api/analyze-images/jobs/${jobId}?includeResult=1`, (res: any) => {
-        let resData = '';
-        res.on('data', (chunk: any) => (resData += chunk));
-        res.on('end', () => {
-          try {
-            resolve(JSON.parse(resData));
-          } catch (e) {
-            reject(new Error(`Failed to parse response: ${resData}`));
-          }
-        });
-      }).on('error', reject);
-    });
+    const status = await getJson(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}?includeResult=1`);
 
     const st = status?.job?.status;
     const stage = status?.job?.stage;
@@ -228,8 +308,65 @@ async function runJobsTest(base64Images: string[]) {
   throw new Error('Job did not finish in time.');
 }
 
+async function runRetryBypassCacheTest(base64Images: string[]) {
+  console.log('\n🚀 Starting Retry Test: Bypass Cache');
+
+  const payload = {
+    images: base64Images.slice(0, 1),
+    provider: 'doubao',
+    subject: '数学',
+    grade: '七年级',
+    ocrTexts: [
+      '七年级数学期中考试 总分100 得分85 计算题30得28 填空题20得18 应用题50得39 主要问题：审题不细、计算粗心'
+    ]
+  };
+
+  const created = await postJson(JOBS_ENDPOINT, payload);
+  if (!created?.success || !created?.jobId) {
+    throw new Error(`Failed to create cached job: ${JSON.stringify(created)}`);
+  }
+  const jobId = String(created.jobId);
+  const status0 = await getJson(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}?includeResult=0`);
+  const st0 = String(status0?.job?.status || '');
+  const stage0 = String(status0?.job?.stage || '');
+  console.log(`  - Cached job initial: ${st0}/${stage0}`);
+  if (st0 !== 'completed') {
+    throw new Error(`Expected cached job to be completed, got ${st0}/${stage0}`);
+  }
+
+  const retried = await postJson(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}/retry?bypassCache=1`, {});
+  if (!retried?.success) {
+    throw new Error(`Retry failed: ${JSON.stringify(retried)}`);
+  }
+  await sleep(600);
+  const status1 = await getJson(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}?includeResult=0`);
+  const st1 = String(status1?.job?.status || '');
+  const stage1 = String(status1?.job?.stage || '');
+  console.log(`  - After bypass retry: ${st1}/${stage1}`);
+  if (st1 === 'completed') {
+    throw new Error(`Expected not-completed right after bypass retry, got ${st1}/${stage1}`);
+  }
+  if (st1 !== 'pending' && st1 !== 'running') {
+    throw new Error(`Expected pending/running after bypass retry, got ${st1}/${stage1}`);
+  }
+
+  for (let i = 0; i < 60; i += 1) {
+    await sleep(5000);
+    const status = await getJson(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}?includeResult=0`);
+    const st = String(status?.job?.status || '');
+    const stage = String(status?.job?.stage || '');
+    console.log(`  - Retry poll ${i + 1}: ${st}/${stage}`);
+    if (st === 'completed') return;
+    if (st === 'failed') throw new Error(`Retry job failed: ${status?.job?.errorMessage || 'unknown error'}`);
+    if (st === 'canceled') throw new Error('Retry job canceled.');
+  }
+
+  throw new Error('Retry job did not finish in time.');
+}
+
 runSmokeTest()
   .then(async () => {
+    await runAuxApiTests();
     const base64Images: string[] = [];
     for (const p of IMAGE_PATHS) {
       if (fs.existsSync(p)) {
@@ -239,6 +376,8 @@ runSmokeTest()
     if (base64Images.length === 0) return;
     await runJobsTest(base64Images);
     console.log('\n🎉 Jobs Test Completed Successfully.');
+    await runRetryBypassCacheTest(base64Images);
+    console.log('\n🎉 Retry Test Completed Successfully.');
   })
   .catch((err: any) => {
     console.error('❌ Test Failed:', err);

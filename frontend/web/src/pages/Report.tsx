@@ -9,6 +9,7 @@ import { PrintLayout } from '../components/PrintLayout';
 import { AcceptanceModal } from '../components/AcceptanceModal';
 import { StudyMethodsModal } from '../components/StudyMethodsModal';
 import { getAbilityInfoBySubject } from '../config/subjectConfig';
+import { LatexRenderer } from '../components/LatexRenderer';
 
 interface ReportProps {
   data: any;
@@ -180,36 +181,28 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   // 如果没有真实数据，使用默认结构防止崩溃，但尽量使用传入的 data
   // 假设 data 结构为 { studentInfo, summary, modules }
   const studentInfo = data?.studentInfo || {
-    name: '张三', grade: '七年级', subject: '数学', className: '2班', examName: '期中考试'
+    name: '学生', grade: '年级', subject: '待定', className: '班级', examName: '考试'
   };
 
   const summary = data?.summary || {
-    totalScore: 86,
+    totalScore: 0,
     fullScore: 100,
-    classAverage: 79,
-    classRank: 8,
-    totalStudents: 52,
-    scoreChange: 6,
-    overview: "成绩优良，比上次期中考试有所提升。"
+    classAverage: 0,
+    classRank: 0,
+    totalStudents: 0,
+    scoreChange: 0,
+    overview: "等待分析..."
   };
 
   const modules = data?.modules || {
     evaluation: [
-        "基础知识掌握较扎实，多数选择题答题准确。",
-        "总分高于班级平均分 7 分，处于中上水平。",
-        "与上次期中考试相比，总分提升 6 分。"
+        "等待分析结果生成...",
     ],
-    problems: [
-        { name: "分式方程", rate: "55%", desc: "列方程步骤不完整，易漏写条件。" },
-        { name: "一次函数图像", rate: "48%", desc: "读图不熟练，坐标易看错。" }
-    ],
-    keyErrors: [
-        { no: "12", score: 8, point: "分式方程", type: "概念不清" },
-        { no: "18", score: 10, point: "函数综合题", type: "解题不完整" }
-    ],
+    problems: [],
+    keyErrors: [],
     advice: {
-        content: ["本周重点复习：分式方程、一元一次不等式。", "每天完成 3～5 道相关练习题。"],
-      habit: ["解答题按‘审题→列式→计算→检查’四步书写完整。", "预留 5 分钟检查填空题。"]
+        content: ["暂无建议"],
+        habit: ["暂无建议"]
     }
   };
 
@@ -629,7 +622,7 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
     if (retrying) return;
     try {
       setRetrying(true);
-      const r = await fetch(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}/retry`, {
+      const r = await fetch(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}/retry?bypassCache=1`, {
         method: 'POST',
         headers: {
           ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
@@ -1110,20 +1103,50 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
     const strongest = String(summary?.strongestKnowledge || '').trim();
     const weakest = String(summary?.weakestKnowledge || '').trim();
 
-    const coreProblems = Array.isArray(modules?.problems) ? modules.problems.slice(0, 2) : [];
-    const points = coreProblems
-      .map((p: any) => String(p?.name || '').trim())
+    const rank = Number(summary?.classRank ?? 0);
+    const totalStudents = Number(summary?.totalStudents ?? 0);
+    const classAverage = Number(summary?.classAverage ?? 0);
+    const scoreMetaParts = [
+      scoreLine ? `分数 ${scoreLine}` : '',
+      classAverage ? `班均 ${classAverage}` : '',
+      rank && totalStudents ? `排名 ${rank}/${totalStudents}` : '',
+    ].filter(Boolean);
+    const scoreMeta = scoreMetaParts.length ? `（${scoreMetaParts.join('，')}）` : '';
+
+    const coreProblems = Array.isArray(modules?.problems) ? modules.problems.slice(0, 3) : [];
+    const focusBlocks = coreProblems
+      .map((p: any) => {
+        const detail = parseProblemDetail(p);
+        const wp = String(p?.name || '').trim();
+        const reason = String(detail?.reason || '').trim();
+        const fix = String(detail?.fix || '').trim();
+        const qno = String(detail?.questionNo || '').trim();
+        const score = String(detail?.score || '').trim();
+        const headParts = [qno ? `题号 ${qno}` : '', score ? `得分 ${score}` : ''].filter(Boolean);
+        const head = headParts.length ? `（${headParts.join('，')}）` : '';
+        const line = [
+          wp ? `- ${wp}${head}` : '-',
+          reason ? `：${reason}` : '',
+          fix ? `；最短改法：${fix}` : '',
+        ].join('');
+        return line === '-' ? '' : line;
+      })
       .filter(Boolean);
 
     const praise = strongest ? `这次${subject}里“${strongest}”表现比较稳，值得表扬。` : `这次${subject}整体完成度不错，值得表扬。`;
     const focus = weakest ? `接下来我们把“${weakest}”作为重点。` : `接下来我们把本次错因作为重点。`;
-    const problemsLine = points.length > 0 ? `目前主要卡点是：${points.join('、')}。` : '';
+    const problemsLine = focusBlocks.length > 0 ? ['本次主要需要针对性加强的点：', ...focusBlocks].join('\n') : '';
+
+    const backendSummary = String((data as any)?.forParent?.summary || '').trim();
+    const backendGuidance = String((data as any)?.forParent?.guidance || '').trim();
 
     return [
-      `家长您好，${name}的《${examName}》${subject}成绩我已看过（${scoreLine}）。`,
+      `家长您好，${name}的《${examName}》${subject}成绩我已看过${scoreMeta}。`,
       praise,
+      backendSummary,
       problemsLine,
       focus,
+      backendGuidance,
       '本周执行一个轻量计划：每天 20 分钟做 3 道同类题 + 复盘一句话（错因 + 下次检查点）。',
       '我会同步观察完成情况与错题变化，有需要再和您沟通调整。',
     ]
@@ -1147,9 +1170,40 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   };
 
   const handlePrintWeeklyNotebook = () => {
+    let printWindow: Window | null = null;
     try {
-      localStorage.setItem('errorLedger:autoPrint', '1');
-      localStorage.setItem('errorLedger:filter', 'unsolved');
+      printWindow = window.open('', 'error-ledger-print', 'noopener,noreferrer');
+      if (printWindow) {
+        const documentTitle = '错题本导出';
+        printWindow.document.open();
+        printWindow.document.write(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${documentTitle}</title>
+    <style>
+      @page { margin: 16mm; }
+      body {
+        margin: 0;
+        padding: 24px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: #111827;
+      }
+      .muted { color: #64748b; font-size: 12px; }
+      .title { font-size: 18px; font-weight: 700; margin: 0 0 8px 0; }
+    </style>
+  </head>
+  <body>
+    <div class="title">正在生成错题本…</div>
+    <div class="muted">请稍候，生成完成后将自动弹出打印。</div>
+  </body>
+</html>`);
+        printWindow.document.close();
+        printWindow.focus();
+      }
+      sessionStorage.setItem('errorLedger:autoPrint', '1');
+      sessionStorage.setItem('errorLedger:filter', 'unsolved');
+      sessionStorage.setItem('errorLedger:printWindowName', 'error-ledger-print');
     } catch {}
     if (onOpenNotebook) {
       onOpenNotebook();
@@ -1591,6 +1645,18 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         isOpen={isStudyMethodsOpen}
         onClose={() => setIsStudyMethodsOpen(false)}
         methods={studyCoach.methods}
+        onSyncToReport={(methods) => {
+          const next = {
+            ...(data || {}),
+            studyMethods: {
+              ...((data as any)?.studyMethods || {}),
+              methods,
+              weekPlan: Array.isArray(((data as any)?.studyMethods || {})?.weekPlan) ? ((data as any)?.studyMethods || {})?.weekPlan : studyCoach.weekPlan,
+            },
+          };
+          if (onUpdateExam) onUpdateExam(next);
+          showToast('已同步学习方法到试卷分析报告');
+        }}
       />
 
       <div className={`report-content ${showIntro ? 'intro' : ''}`}>
@@ -1625,7 +1691,7 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
                     </div>
                 </div>
                 <div className="score-eval-text" style={{ fontSize: 13, background: 'rgba(255,255,255,0.5)', border: '1px solid #e2e8f0' }}>
-                    {summary.overview}
+                    <LatexRenderer text={String(summary.overview || '')} />
                 </div>
             </div>
           </div>
@@ -1642,8 +1708,15 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
             <div className="error-card-stack">
               {modules.problems.map((item: any, i: number) => {
                  const detail = parseProblemDetail(item);
+                 const focusId = `problem-${i}`;
+                 const expanded = focusErrorId === focusId;
                  return (
-                  <div key={i} className="error-card-item">
+                  <div
+                    key={i}
+                    className="error-card-item"
+                    onClick={() => setFocusErrorId(expanded ? null : focusId)}
+                    style={{ cursor: 'pointer' }}
+                  >
                     <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: '#1e293b' }}>
                       {item.name} <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>| 扣分率 {item.rate}</span>
                     </div>
@@ -1662,31 +1735,55 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
                     {detail.reason && (
                       <div className="ec-row">
                         <div className="ec-label">错因</div>
-                        <div className="ec-value highlight">{detail.reason}</div>
+                        <div className="ec-value highlight">
+                          <LatexRenderer text={String(detail.reason || '')} />
+                        </div>
                       </div>
                     )}
                     {detail.evidence && (
                       <div className="ec-row">
                         <div className="ec-label">证据</div>
-                        <div className="ec-value">{detail.evidence}</div>
+                        <div className="ec-value">
+                          <LatexRenderer text={String(detail.evidence || '')} />
+                        </div>
                       </div>
                     )}
                     {detail.fix && (
                       <div className="ec-row">
                         <div className="ec-label">改法</div>
-                        <div className="ec-value fix">{detail.fix}</div>
+                        <div className="ec-value fix">
+                          <LatexRenderer text={String(detail.fix || '')} />
+                        </div>
+                      </div>
+                    )}
+
+                    {expanded && String(item?.desc || '').trim() && (
+                      <div className="ec-row" style={{ marginTop: 2 }}>
+                        <div className="ec-label">详情</div>
+                        <div className="ec-value">
+                          <LatexRenderer text={String(item?.desc || '')} />
+                        </div>
                       </div>
                     )}
                     
                     <div className="ec-actions">
                       <button 
                         className="ec-btn primary" 
-                        onClick={() => handleTrainError(item)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleTrainError(item);
+                        }}
                         disabled={!!generatingWeakPoint}
                       >
                         <span>⚡</span> 练一练
                       </button>
-                      <button className="ec-btn secondary" onClick={(e) => handleAddToPlan(e, item)}>
+                      <button
+                        className="ec-btn secondary"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleAddToPlan(e, item);
+                        }}
+                      >
                         <span>📅</span> 入计划
                       </button>
                     </div>

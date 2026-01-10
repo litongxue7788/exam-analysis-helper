@@ -5,6 +5,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Filter, Search, BookOpen, Tag, MoreHorizontal, Printer, Sparkles, RefreshCcw } from 'lucide-react';
 import { ErrorItem } from '../types/notebook';
+import { LatexRenderer } from '../components/LatexRenderer';
 
 interface ErrorLedgerProps {
   onBack: () => void;
@@ -16,6 +17,8 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
   const [isDesktop, setIsDesktop] = useState(() => window.innerWidth >= 768);
   const [generatingId, setGeneratingId] = useState<string | null>(null);
   const printRef = useRef<HTMLDivElement>(null);
+  const [selectedKnowledgePoint, setSelectedKnowledgePoint] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
   
   // 模拟 AI 生成变式题的状态
   const [similarQuestions, setSimilarQuestions] = useState<Record<string, {
@@ -23,41 +26,108 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
     answer: string;
   }[]>>({});
 
-  const handlePrint = () => {
-    const node = printRef.current;
-    if (!node) return;
+  const handlePrint = (targetWindow?: Window | null) => {
+    if (isDesktop) {
+        // Desktop: open new window for printing
+        const win = targetWindow || window.open('', 'print_window', 'width=800,height=1000');
+        if (!win) {
+            alert('请允许弹出窗口以进行打印');
+            return;
+        }
+        
+        // Write content
+        win.document.open();
+        win.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>错题本导出</title>
+              <style>
+                body { font-family: sans-serif; padding: 40px; }
+                .question-item { break-inside: avoid; border: 1px solid #eee; padding: 20px; border-radius: 8px; margin-bottom: 30px; }
+                .header { text-align: center; margin-bottom: 30px; border-bottom: 2px solid #333; padding-bottom: 20px; }
+                .meta { display: flex; justify-content: space-between; margin-bottom: 15px; }
+                .content { font-size: 15px; line-height: 1.6; margin-bottom: 20px; }
+                .footer { display: flex; gap: 10px; border-top: 1px dashed #eee; padding-top: 15px; }
+                .redo-area { margin-top: 20px; height: 100px; border: 1px solid #f0f0f0; border-radius: 4px; position: relative; }
+                @media print {
+                  .no-print { display: none; }
+                }
+              </style>
+              <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+              <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"><\/script>
+              <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"><\/script>
+            </head>
+            <body>
+              <div class="header">
+                <h1 style="font-size: 24px; margin: 0;">错题攻克本</h1>
+                <p style="margin-top: 10px; color: #666;">生成时间：${new Date().toLocaleDateString()} | 学科：${subjectText}</p>
+              </div>
+              
+              <div id="questions-container">
+                ${filteredErrors.map((item, index) => {
+                  // Pre-process text for printing to handle double escapes
+                  const safeText = (item.questionText || '')
+                    .replace(/\\\\/g, '\\')
+                    .replace(/\\\[/g, '$$$')
+                    .replace(/\\\]/g, '$$$')
+                    .replace(/\\\(/g, '$$')
+                    .replace(/\\\)/g, '$$');
+                    
+                  return `
+                  <div class="question-item">
+                    <div class="meta">
+                      <span style="font-weight: bold; font-size: 16px;">题目 ${index + 1}</span>
+                      <span style="color: #666; font-size: 12px;">来源：${item.sourceExamName}</span>
+                    </div>
+                    
+                    <div class="content">
+                      ${safeText}
+                    </div>
+                    
+                    <div class="footer">
+                       <div style="flex: 1;">
+                         <div style="font-size: 12px; color: #999; margin-bottom: 5px;">错误类型</div>
+                         <div style="font-size: 14px;">${item.errorType === 'calculation' ? '计算错误' : item.errorType}</div>
+                       </div>
+                       <div style="flex: 2;">
+                         <div style="font-size: 12px; color: #999; margin-bottom: 5px;">知识点</div>
+                         <div style="font-size: 14px;">${item.knowledgePoints.join('、')}</div>
+                       </div>
+                    </div>
+                    
+                    <div class="redo-area">
+                       <span style="position: absolute; top: 5px; left: 10px; font-size: 12px; color: #ccc;">重做区域</span>
+                    </div>
+                  </div>
+                `}).join('')}
+              </div>
 
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer');
-    if (!printWindow) return;
-
-    const documentTitle = '错题本导出';
-    printWindow.document.open();
-    printWindow.document.write(`<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>${documentTitle}</title>
-    <style>
-      @page { margin: 16mm; }
-      body {
-        margin: 0;
-        padding: 0;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-        color: #111827;
-      }
-    </style>
-  </head>
-  <body>
-    ${node.innerHTML}
-  </body>
-</html>`);
-    printWindow.document.close();
-    printWindow.focus();
-
-    window.setTimeout(() => {
-      printWindow.print();
-      printWindow.close();
-    }, 200);
+              <script>
+                document.addEventListener("DOMContentLoaded", function() {
+                    renderMathInElement(document.body, {
+                      delimiters: [
+                          {left: '$$', right: '$$', display: true},
+                          {left: '$', right: '$', display: false},
+                          {left: '\\\\(', right: '\\\\)', display: false},
+                          {left: '\\\\[', right: '\\\\]', display: true}
+                      ],
+                      throwOnError: false
+                    });
+                    setTimeout(() => {
+                        window.print();
+                        // Optional: window.close(); 
+                    }, 500);
+                });
+              <\/script>
+            </body>
+          </html>
+        `);
+        win.document.close();
+    } else {
+       // Mobile: use existing print logic or simplified version
+       window.print();
+    }
   };
 
   useEffect(() => {
@@ -82,7 +152,13 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
   };
 
   const toErrorItemsFromExam = (exam: any): ErrorItem[] => {
-    const problems = Array.isArray(exam?.modules?.problems) ? exam.modules.problems : [];
+    let problems: any[] = [];
+    if (Array.isArray(exam?.modules)) {
+      problems = exam.modules.flatMap((m: any) => m?.problems || []);
+    } else if (Array.isArray(exam?.modules?.problems)) {
+      problems = exam.modules.problems;
+    }
+
     const createdAt = (() => {
       const ts = exam?.startTime || exam?.timestamp || Date.now();
       const d = new Date(ts);
@@ -152,23 +228,76 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
   }, [errors, storageKey]);
 
   useEffect(() => {
-    const filter = localStorage.getItem('errorLedger:filter');
+    const filter = sessionStorage.getItem('errorLedger:filter') || localStorage.getItem('errorLedger:filter');
     if (filter === 'solved' || filter === 'unsolved' || filter === 'all') {
       setActiveFilter(filter);
+      sessionStorage.removeItem('errorLedger:filter');
       localStorage.removeItem('errorLedger:filter');
     }
   }, []);
 
   useEffect(() => {
-    const shouldPrint = localStorage.getItem('errorLedger:autoPrint');
+    const shouldPrint = sessionStorage.getItem('errorLedger:autoPrint') || localStorage.getItem('errorLedger:autoPrint');
     if (shouldPrint !== '1') return;
-    if (!errors || errors.length === 0) return;
+    const winName = sessionStorage.getItem('errorLedger:printWindowName') || localStorage.getItem('errorLedger:printWindowName');
+    const targetWindow = winName ? window.open('', winName) : null;
+    sessionStorage.removeItem('errorLedger:autoPrint');
     localStorage.removeItem('errorLedger:autoPrint');
-    window.setTimeout(() => handlePrint(), 200);
+    sessionStorage.removeItem('errorLedger:printWindowName');
+    localStorage.removeItem('errorLedger:printWindowName');
+    if (!errors || errors.length === 0) {
+      if (targetWindow && !targetWindow.closed) {
+        targetWindow.document.open();
+        targetWindow.document.write(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>错题本导出</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, "Noto Sans", "PingFang SC", "Microsoft YaHei", sans-serif; padding: 24px; color: #111827; }
+      .muted { color: #64748b; font-size: 12px; margin-top: 8px; }
+    </style>
+  </head>
+  <body>
+    <div style="font-size:16px;font-weight:700;">当前没有可打印的错题</div>
+    <div class="muted">请先完成分析并确保存在“待攻克”的错题。</div>
+  </body>
+</html>`);
+        targetWindow.document.close();
+        targetWindow.focus();
+      } else {
+        alert("当前没有错题可打印，请确认是否有待攻克的错题。");
+      }
+      return;
+    }
+    window.setTimeout(() => handlePrint(targetWindow), 50);
   }, [errors]);
 
-  const filteredErrors = errors.filter((e) =>
-    activeFilter === 'all' ? true : activeFilter === 'unsolved' ? !e.isResolved : e.isResolved
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const filteredErrors = errors.filter((e) => {
+    const matchesStatus =
+      activeFilter === 'all' ? true : activeFilter === 'unsolved' ? !e.isResolved : e.isResolved;
+    const matchesKnowledgePoint = selectedKnowledgePoint
+      ? Array.isArray(e.knowledgePoints) && e.knowledgePoints.includes(selectedKnowledgePoint)
+      : true;
+    const matchesSearch = !normalizedQuery
+      ? true
+      : [
+          e.questionText,
+          e.sourceExamName,
+          ...(Array.isArray(e.knowledgePoints) ? e.knowledgePoints : []),
+          ...(Array.isArray(e.tags) ? e.tags : []),
+        ].some((v) => String(v || '').toLowerCase().includes(normalizedQuery));
+    return matchesStatus && matchesKnowledgePoint && matchesSearch;
+  });
+
+  const allKnowledgePoints = Array.from(
+    new Set(
+      errors
+        .flatMap((e) => (Array.isArray(e.knowledgePoints) ? e.knowledgePoints : []))
+        .map((k) => String(k || '').trim())
+        .filter(Boolean)
+    )
   );
 
   const handleGenerateSimilar = async (errorId: string) => {
@@ -185,6 +314,7 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
         body: JSON.stringify({
           questionText: item.questionText,
           knowledgePoints: item.knowledgePoints,
+          subject: subjectText, // 传递学科信息
           count: 2
         })
       });
@@ -306,7 +436,7 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
                     </div>
 
                     <div className="error-content" style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>
-                      {item.questionText}
+                      <LatexRenderer text={item.questionText || ''} />
                     </div>
 
                     <div className="error-tags" style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -386,8 +516,8 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
                              </div>
                              {similarQuestions[item.id].map((sq, idx) => (
                                <div key={idx} style={{ marginBottom: 8, fontSize: 13, color: '#334155' }}>
-                                  <div style={{ marginBottom: 4 }}>{sq.question}</div>
-                                  <div style={{ color: '#64748b', fontSize: 12 }}>答案：{sq.answer}</div>
+                                  <div style={{ marginBottom: 4 }}><LatexRenderer text={sq.question} /></div>
+                                  <div style={{ color: '#64748b', fontSize: 12 }}>答案：<LatexRenderer text={sq.answer} /></div>
                                </div>
                              ))}
                           </div>
@@ -416,7 +546,7 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
                 </div>
                 
                 <div style={{ fontSize: 15, lineHeight: 1.6, marginBottom: 20 }}>
-                  {item.questionText}
+                  <LatexRenderer text={item.questionText || ''} />
                 </div>
                 
                 <div style={{ display: 'flex', gap: 10, borderTop: '1px dashed #eee', paddingTop: 15 }}>
@@ -450,16 +580,42 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
            <div className="inspector-section">
              <div className="section-title">知识点</div>
              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
-                {['有理数', '一元一次方程', '几何图形'].map(k => (
-                  <span key={k} style={{
+                <button
+                  type="button"
+                  onClick={() => setSelectedKnowledgePoint(null)}
+                  style={{
                     fontSize: 12,
                     padding: '6px 12px',
                     borderRadius: 16,
                     border: '1px solid #e2e8f0',
-                    color: '#64748b',
-                    cursor: 'pointer'
-                  }}>{k}</span>
-                ))}
+                    background: selectedKnowledgePoint ? '#ffffff' : '#eff6ff',
+                    color: selectedKnowledgePoint ? '#64748b' : '#3B82F6',
+                    cursor: 'pointer',
+                  }}
+                >
+                  全部
+                </button>
+                {allKnowledgePoints.map((k) => {
+                  const selected = selectedKnowledgePoint === k;
+                  return (
+                    <button
+                      key={k}
+                      type="button"
+                      onClick={() => setSelectedKnowledgePoint(selected ? null : k)}
+                      style={{
+                        fontSize: 12,
+                        padding: '6px 12px',
+                        borderRadius: 16,
+                        border: `1px solid ${selected ? '#bfdbfe' : '#e2e8f0'}`,
+                        background: selected ? '#eff6ff' : '#ffffff',
+                        color: selected ? '#3B82F6' : '#64748b',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {k}
+                    </button>
+                  );
+                })}
              </div>
            </div>
 
@@ -478,6 +634,8 @@ export const ErrorLedger: React.FC<ErrorLedgerProps> = ({ onBack, currentExam })
                <input 
                  type="text" 
                  placeholder="搜索题目内容..." 
+                 value={searchQuery}
+                 onChange={(e) => setSearchQuery(e.target.value)}
                  style={{ border: 'none', background: 'none', outline: 'none', fontSize: 12, width: '100%' }}
                />
              </div>

@@ -25,6 +25,15 @@ export interface AnalyzeExamResponse {
   
   // 如果失败，返回错误信息
   errorMessage?: string;
+
+  // (可选) 标准化错误码（用于前端更友好提示）
+  errorCode?: string;
+
+  // (可选) 日额度重置时间（ISO 字符串）
+  resetAt?: string;
+
+  // (可选) 建议多少秒后重试
+  retryAfterSeconds?: number;
   
   // 分析结果数据 (核心部分)
   data?: {

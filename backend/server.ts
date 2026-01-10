@@ -16,7 +16,11 @@ import { llmService } from './llm/service';
 // =================================================================================
 
 const app = express();
-const PORT = 3002;
+const PORT = (() => {
+  const v = Number(process.env.PORT || 3002);
+  if (!Number.isFinite(v) || v <= 0) return 3002;
+  return Math.floor(v);
+})();
 const repoRoot = (() => {
   let dir = __dirname;
   for (let i = 0; i < 8; i += 1) {
@@ -29,6 +33,9 @@ const repoRoot = (() => {
   return path.resolve(__dirname, '..');
 })();
 const LLM_CONFIG_PATH = path.resolve(repoRoot, 'config', 'llm.json');
+const WEB_DIST_DIR = path.resolve(repoRoot, 'frontend', 'web', 'dist');
+const WEB_INDEX_HTML = path.resolve(WEB_DIST_DIR, 'index.html');
+const HAS_WEB_DIST = fs.existsSync(WEB_INDEX_HTML);
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
@@ -157,6 +164,7 @@ type ImageAnalyzeJobRecord = {
   imageCount: number;
   estimateSeconds: number;
   cacheKey?: string;
+  bypassCache?: boolean;
   partialResult?: AnalyzeExamResponse;
   result?: AnalyzeExamResponse;
   errorMessage?: string;
@@ -406,12 +414,47 @@ function validateVisionJson(value: any): { ok: true } | { ok: false; reason: str
   if (!meta || typeof meta !== 'object') return { ok: false, reason: '缺少 meta' };
   if (typeof meta.examName !== 'string') return { ok: false, reason: 'meta.examName 缺失' };
   if (typeof meta.subject !== 'string') return { ok: false, reason: 'meta.subject 缺失' };
-  if (typeof meta.score !== 'number') return { ok: false, reason: 'meta.score 缺失' };
-  if (typeof meta.fullScore !== 'number') return { ok: false, reason: 'meta.fullScore 缺失' };
+  // if (typeof meta.score !== 'number') return { ok: false, reason: 'meta.score 缺失' };
+  // if (typeof meta.fullScore !== 'number') return { ok: false, reason: 'meta.fullScore 缺失' };
   if (!forStudent || typeof forStudent !== 'object') return { ok: false, reason: '缺少 forStudent' };
   if (typeof forStudent.overall !== 'string') return { ok: false, reason: 'forStudent.overall 缺失' };
   if (!studyMethods || typeof studyMethods !== 'object') return { ok: false, reason: '缺少 studyMethods' };
   return { ok: true };
+}
+
+function coerceToNumber(value: any): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return undefined;
+  const raw = value.trim();
+  if (!raw) return undefined;
+  const match = raw.replace(/,/g, '').match(/-?\d+(\.\d+)?/);
+  if (!match) return undefined;
+  const n = Number(match[0]);
+  if (!Number.isFinite(n)) return undefined;
+  return n;
+}
+
+function normalizeMetaNumbers(meta: any) {
+  if (!meta || typeof meta !== 'object') return;
+
+  if (typeof meta.score !== 'number') {
+    meta.score = coerceToNumber(meta.score) ?? 0;
+  }
+  if (typeof meta.fullScore !== 'number') {
+    meta.fullScore = coerceToNumber(meta.fullScore) ?? 100;
+  }
+
+  if (Array.isArray(meta.typeAnalysis)) {
+    for (const item of meta.typeAnalysis) {
+      if (!item || typeof item !== 'object') continue;
+      if (typeof (item as any).score !== 'number') {
+        (item as any).score = coerceToNumber((item as any).score) ?? 0;
+      }
+      if (typeof (item as any).full !== 'number') {
+        (item as any).full = coerceToNumber((item as any).full) ?? 0;
+      }
+    }
+  }
 }
 
 function validateExtractJson(value: any): { ok: true } | { ok: false; reason: string } {
@@ -517,6 +560,11 @@ async function analyzeExtractTextWithProvider(
   );
 
   let parsed = parseLlmJson(rawContent);
+  if (parsed.ok) {
+    try {
+      normalizeMetaNumbers((parsed.value as any)?.meta);
+    } catch {}
+  }
   if (!parsed.ok || validateExtractJson(parsed.value).ok === false) {
     emit({ type: 'progress', stage: 'extracting', provider, message: '修复结构化结果', at: Date.now() });
     const repairPrompt = `
@@ -540,6 +588,11 @@ ${rawContent}
       retryBaseDelayMs
     );
     parsed = parseLlmJson(repaired);
+    if (parsed.ok) {
+      try {
+        normalizeMetaNumbers((parsed.value as any)?.meta);
+      } catch {}
+    }
   }
 
   if (!parsed.ok) throw parsed.error;
@@ -658,6 +711,11 @@ async function analyzeExtractWithProvider(
   );
 
   let parsed = parseLlmJson(rawContent);
+  if (parsed.ok) {
+    try {
+      normalizeMetaNumbers((parsed.value as any)?.meta);
+    } catch {}
+  }
   if (!parsed.ok || validateExtractJson(parsed.value).ok === false) {
     emit({ type: 'progress', stage: 'extracting', provider: visionProvider, message: '修复结构化结果', at: Date.now() });
     const repairPrompt = `
@@ -682,6 +740,11 @@ ${rawContent}
       retryBaseDelayMs
     );
     parsed = parseLlmJson(repaired);
+    if (parsed.ok) {
+      try {
+        normalizeMetaNumbers((parsed.value as any)?.meta);
+      } catch {}
+    }
   }
 
   if (!parsed.ok) throw parsed.error;
@@ -979,12 +1042,13 @@ async function runImageAnalyzeJob(jobId: string) {
     });
   };
 
+  const shouldBypassCache = job.bypassCache === true;
   if (!job.cacheKey) {
     try {
       job.cacheKey = computeImageAnalyzeCacheKey(job.request);
     } catch {}
   }
-  if (job.cacheKey) {
+  if (!shouldBypassCache && job.cacheKey) {
     const cached = getCachedImageAnalyzeResult(job.cacheKey);
     if (cached) {
       job.status = 'completed';
@@ -1010,6 +1074,7 @@ async function runImageAnalyzeJob(jobId: string) {
     }
   }
 
+  job.bypassCache = false;
   job.status = 'running';
   job.errorMessage = undefined;
   setSnapshot('extracting');
@@ -1096,8 +1161,11 @@ ${grade ? `【重要提示】学生年级为：${grade}，请参考此学段的�
 
     const extractedMeta = extracted?.meta || {};
     const extractedProblems = extracted?.observations?.problems || [];
+    const effectiveSubject = String(extractedMeta?.subject || subject || '').trim();
 
-    setSnapshot('diagnosing');
+    // Parallel Execution: Diagnosis & Practice
+    setSnapshot('diagnosing'); 
+
     const diagnosisPrompt = `
 你是一位经验丰富的特级教师。基于下面“试卷信息提取结果”，生成面向学生与家长的核心结论与行动建议。
 
@@ -1127,7 +1195,7 @@ ${JSON.stringify(extracted, null, 2)}
 }
 `.trim();
 
-    const diagnosis = await generateTextJsonWithRepair(
+    const diagnosisTask = generateTextJsonWithRepair(
       diagnosisPrompt,
       providers.diagnose,
       'diagnosing',
@@ -1136,19 +1204,63 @@ ${JSON.stringify(extracted, null, 2)}
       `- review (object)\n- forStudent.overall (string)\n- forStudent.advice (string[])\n- studyMethods.methods (string[])\n- studyMethods.weekPlan (string[])\n- forParent (object)`
     );
 
-    const buildResponse = (opts: { practice?: any } = {}): AnalyzeExamResponse => {
-      const meta = extractedMeta || {};
+    const practicePrompt = `
+请基于下面信息，为学生生成一份“针对性巩固练习卷”和“验收小测”。
+
+要求：
+- 题目必须可直接作答（完整题干/数值/设问），不要只写概括。
+- 每道题提供 hints（三层：审题提示、思路提示、关键一步起始），不出现最终答案。
+- 输出严格 JSON（不要包含 Markdown 代码块）。
+
+【试卷信息提取】：
+${JSON.stringify(extracted, null, 2)}
+
+${effectiveSubject ? getSubjectPracticeInstruction(effectiveSubject) : ''}
+
+输出结构：
+{
+  "practicePaper": {
+    "title": "针对性巩固练习卷",
+    "sections": [
+      { "name": "一、...", "questions": [ { "no": 1, "content": "...", "hints": ["..."] } ] }
+    ]
+  },
+  "acceptanceQuiz": {
+    "title": "验收小测",
+    "passRule": "3题全对",
+    "questions": [ { "no": 1, "content": "...", "hints": ["..."] } ]
+  }
+}
+`.trim();
+
+    const practiceTask = generateTextJsonWithRepair(
+      practicePrompt,
+      providers.practice,
+      'practicing',
+      emit,
+      validatePracticeJson,
+      `- practicePaper (object)\n- acceptanceQuiz (object)`
+    );
+
+    const [diagnosis, practice] = await Promise.all([diagnosisTask, practiceTask]);
+
+    const buildResponse = (opts: { practice?: any; diagnosis?: any } = {}): AnalyzeExamResponse => {
+      const meta = { ...(extractedMeta || {}) };
+      if (!String((meta as any)?.subject || '').trim() && effectiveSubject) (meta as any).subject = effectiveSubject;
+      const diag = opts.diagnosis || {};
+      const prac = opts.practice || {};
+      
       const reportJson = {
         meta,
-        review: diagnosis?.review,
+        review: diag.review,
         forStudent: {
-          ...(diagnosis?.forStudent || {}),
+          ...(diag.forStudent || {}),
           problems: Array.isArray(extractedProblems) ? extractedProblems : [],
         },
-        studyMethods: diagnosis?.studyMethods,
-        forParent: diagnosis?.forParent,
-        practicePaper: opts.practice?.practicePaper,
-        acceptanceQuiz: opts.practice?.acceptanceQuiz,
+        studyMethods: diag.studyMethods,
+        forParent: diag.forParent,
+        practicePaper: prac.practicePaper,
+        acceptanceQuiz: prac.acceptanceQuiz,
       };
       return {
         success: true,
@@ -1178,54 +1290,8 @@ ${JSON.stringify(extracted, null, 2)}
       };
     };
 
-    const partial = buildResponse();
-    job.partialResult = partial;
-    emit({ type: 'partial_result', result: partial, at: Date.now() });
-
-    setSnapshot('practicing');
-    const practicePrompt = `
-请基于下面信息，为学生生成一份“针对性巩固练习卷”和“验收小测”。
-
-要求：
-- 题目必须可直接作答（完整题干/数值/设问），不要只写概括。
-- 每道题提供 hints（三层：审题提示、思路提示、关键一步起始），不出现最终答案。
-- 输出严格 JSON（不要包含 Markdown 代码块）。
-
-【试卷信息提取】：
-${JSON.stringify(extracted, null, 2)}
-
-【核心结论与建议】：
-${JSON.stringify(diagnosis, null, 2)}
-
-${subject ? getSubjectPracticeInstruction(subject) : ''}
-
-输出结构：
-{
-  "practicePaper": {
-    "title": "针对性巩固练习卷",
-    "sections": [
-      { "name": "一、...", "questions": [ { "no": 1, "content": "...", "hints": ["..."] } ] }
-    ]
-  },
-  "acceptanceQuiz": {
-    "title": "验收小测",
-    "passRule": "3题全对",
-    "questions": [ { "no": 1, "content": "...", "hints": ["..."] } ]
-  }
-}
-`.trim();
-
-    const practice = await generateTextJsonWithRepair(
-      practicePrompt,
-      providers.practice,
-      'practicing',
-      emit,
-      validatePracticeJson,
-      `- practicePaper (object)\n- acceptanceQuiz (object)`
-    );
-
     setSnapshot('merging');
-    const response = buildResponse({ practice });
+    const response = buildResponse({ practice, diagnosis });
 
     job.result = response;
     job.partialResult = undefined;
@@ -1308,12 +1374,18 @@ app.use((err: any, req: any, res: any, next: any) => {
 
 const rateBuckets = new Map<string, number[]>();
 const dailyCounts = new Map<string, number>();
-let currentDay = new Date().toISOString().slice(0, 10);
+const getLocalDayKey = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+let currentDay = getLocalDayKey(new Date());
 
 app.use((req, res, next) => {
   if (!req.path.startsWith('/api')) return next();
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDayKey(new Date());
   if (today !== currentDay) {
     currentDay = today;
     rateBuckets.clear();
@@ -1360,14 +1432,31 @@ app.use((req, res, next) => {
     return true;
   };
 
+  const buildDailyQuotaResponse = () => {
+    const resetAt = new Date(now);
+    resetAt.setHours(24, 0, 0, 0);
+    const retryAfterSeconds = Math.max(60, Math.ceil((resetAt.getTime() - now) / 1000));
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+    const hh = String(resetAt.getHours()).padStart(2, '0');
+    const mm = String(resetAt.getMinutes()).padStart(2, '0');
+    return res.status(429).json({
+      success: false,
+      errorCode: 'DAILY_QUOTA_EXCEEDED',
+      errorMessage: `今日使用额度已用完，将于 ${hh}:${mm} 重置`,
+      resetAt: resetAt.toISOString(),
+      retryAfterSeconds,
+    });
+  };
+
   if (requiredCodes.length > 0) {
     const codeRateKey = `code:${gotCode}`;
     const codeDailyKey = `day:${today}:code:${gotCode}`;
     if (!rateCheck(codeRateKey, perCodePerMinute)) {
+      res.setHeader('Retry-After', '60');
       return res.status(429).json({ success: false, errorMessage: '请求过于频繁，请稍后再试' });
     }
     if (!dailyCheck(codeDailyKey, perCodePerDay)) {
-      return res.status(429).json({ success: false, errorMessage: '今日使用额度已用完' });
+      return buildDailyQuotaResponse();
     }
   }
 
@@ -1375,10 +1464,11 @@ app.use((req, res, next) => {
     const ipRateKey = `ip:${ip}`;
     const ipDailyKey = `day:${today}:ip:${ip}`;
     if (!rateCheck(ipRateKey, perIpPerMinute)) {
+      res.setHeader('Retry-After', '60');
       return res.status(429).json({ success: false, errorMessage: '请求过于频繁，请稍后再试' });
     }
     if (!dailyCheck(ipDailyKey, perIpPerDay)) {
-      return res.status(429).json({ success: false, errorMessage: '今日使用额度已用完' });
+      return buildDailyQuotaResponse();
     }
   }
 
@@ -1386,7 +1476,12 @@ app.use((req, res, next) => {
 });
 
 // 1.5 根路径健康检查
-app.get('/', (req, res) => {
+app.get('/healthz', (req, res) => {
+  res.status(200).json({ ok: true, version: 'V3' });
+});
+
+app.get('/', (req, res, next) => {
+  if (HAS_WEB_DIST) return next();
   res.send(`
     <h1>试卷分析助手后端服务</h1>
     <p>状态: 🟢 运行中 (V3)</p>
@@ -1731,58 +1826,141 @@ app.post('/api/generate-practice', async (req, res) => {
 // 2.7 错题本-举一反三接口 (V3.1)
 app.post('/api/generate-similar', async (req, res) => {
   try {
-    const { questionText, knowledgePoints, count, provider } = req.body;
+    const { questionText, knowledgePoints, count, provider, subject, grade } = req.body;
     const modelProvider = (provider as any) || process.env.DEFAULT_PROVIDER || 'doubao';
     
-    console.log(`\n🧩 收到举一反三生成请求: ${knowledgePoints || '综合'} - ${questionText?.slice(0, 20)}...`);
+    const subjectText = String(subject || '').trim();
+    const kpText = Array.isArray(knowledgePoints) ? knowledgePoints.join('、') : String(knowledgePoints || '').trim();
+    const n = Math.max(1, Math.min(6, Number(count || 2) || 2));
 
-    const prompt = `
-请针对以下原题，生成 ${count || 2} 道“举一反三”的变式题。
+    console.log(`\n🧩 收到举一反三生成请求: ${subjectText || '未指定'} - ${kpText || '综合'} - ${String(questionText || '').slice(0, 20)}...`);
 
-【原题】：${questionText || '未提供，请基于知识点生成'}
-【知识点】：${Array.isArray(knowledgePoints) ? knowledgePoints.join(', ') : (knowledgePoints || '综合')}
+    const subjectLower = subjectText.toLowerCase();
+    const isChinese = subjectLower.includes('语文') || subjectLower.includes('chinese');
+    const isEnglish = subjectLower.includes('英语') || subjectLower.includes('english');
+
+    const looksLikeMath = (text: string) => {
+      const t = String(text || '');
+      if (/[=√×÷+\-]/.test(t)) return true;
+      if (/\b(x|y|k)\b/i.test(t)) return true;
+      if (/(方程|函数|不等式|一次函数|二次函数|坐标|几何|面积|体积|周长|角度|分数|小数|求解|解方程)/.test(t)) return true;
+      if (/\d+\s*(\+|\-|\*|×|\/|÷)\s*\d+/.test(t)) return true;
+      return false;
+    };
+
+    const isSubjectConsistent = (items: any[]) => {
+      if (!isChinese) return true;
+      return !items.some((it) => looksLikeMath(String(it?.question || '')));
+    };
+
+    const buildPrompt = (strict: boolean) => {
+      if (isChinese) {
+        return `
+你是一位资深语文老师。请基于以下错题信息，生成 ${n} 道同类“举一反三”语文练习题，并给出标准答案与简要解析。
+
+【学科】语文（必须严格保持语文学科，不得出现数学/方程/函数/计算等内容）
+【年级】${String(grade || '').trim() || '未指定'}
+【知识点】${kpText || '综合'}
+【原题内容】${String(questionText || '').slice(0, 800)}
 
 要求：
-1. 考察核心知识点必须一致，但题目形式或数字需要变化。
-2. 难度可以微调（一道稍易，一道稍难）。
-3. 必须提供标准答案。
-4. 输出为严格的 JSON 格式。
-
-输出 JSON 格式（不要包含 Markdown 代码块）：
+1. 题型必须贴合语文特点：字词拼写/词语辨析/病句修改/标点/阅读理解（短文+设问）/古诗文（默写或理解）等。
+2. 题目难度与原题相当或略有变化，考点保持一致。
+3. 每题提供“答案与解析”，解析简短明确。
+4. 仅输出严格 JSON 数组（不要 Markdown），格式：
 [
-  { "question": "变式题1：题目内容...", "answer": "答案内容" },
-  { "question": "变式题2：题目内容...", "answer": "答案内容" }
+  { "question": "题目内容", "answer": "答案与解析" }
+]
+${strict ? '\n5. 严禁出现数学符号（如 x、y、=、+、-、÷ 等）或数学题型。若无法满足，请输出空数组 []。' : ''}
+`.trim();
+      }
+
+      if (isEnglish) {
+        return `
+你是一位资深英语老师。请基于以下错题信息，生成 ${n} 道同类“举一反三”英语练习题，并给出标准答案与简要解析。
+
+【学科】英语（必须严格保持英语学科）
+【年级】${String(grade || '').trim() || '未指定'}
+【知识点】${kpText || '综合'}
+【原题内容】${String(questionText || '').slice(0, 800)}
+
+要求：
+1. 题型贴合英语：语法选择/改错/完形填空（短篇）/阅读理解（短文+设问）/句子翻译等。
+2. 考点必须与知识点一致，难度相近。
+3. 每题提供“答案与解析”。
+4. 仅输出严格 JSON 数组（不要 Markdown）。
+`.trim();
+      }
+
+      return `
+你是一位资深出题老师。请基于以下错题信息，生成 ${n} 道同类“举一反三”变式练习题，并给出标准答案。
+
+【学科】${subjectText || '未指定'}
+【年级】${String(grade || '').trim() || '未指定'}
+【知识点】${kpText || '综合'}
+【原题内容】${String(questionText || '').slice(0, 800)}
+
+要求：
+1. 核心考点必须一致，但题目数字/条件/问法可以变化。
+2. 难度可微调（一道稍易，一道稍难）。
+3. 必须提供标准答案。
+4. 仅输出严格 JSON 数组（不要 Markdown），格式：
+[
+  { "question": "题目内容", "answer": "答案内容" }
 ]
 `.trim();
+    };
 
     const timeoutMs = Number(process.env.LLM_TIMEOUT_MS || 0);
-    const rawContent = await withTimeout(
+    const generateOnce = async (prompt: string) => {
+      const rawContent = await withTimeout(
         llmService.generateAnalysis(prompt, modelProvider as any, { temperature: 0.6 }),
         timeoutMs,
         '变式题生成超时'
-    );
-    
-    let parsed = parseLlmJson(rawContent);
-    if (!parsed.ok) {
-       console.warn('⚠️ JSON 解析失败，尝试修复...');
-       const repairPrompt = `请修复以下 JSON，只输出 JSON 本体：\n${rawContent}`;
-       const repaired = await withTimeout(
-         llmService.generateAnalysis(repairPrompt, modelProvider as any, { temperature: 0.1 }),
-         timeoutMs,
-         '修复超时'
-       );
-       parsed = parseLlmJson(repaired);
+      );
+
+      let parsed = parseLlmJson(rawContent);
+      if (!parsed.ok) {
+        console.warn('⚠️ JSON 解析失败，尝试修复...');
+        const repairPrompt = `请修复以下 JSON，只输出 JSON 本体：\n${rawContent}`;
+        const repaired = await withTimeout(
+          llmService.generateAnalysis(repairPrompt, modelProvider as any, { temperature: 0.1 }),
+          timeoutMs,
+          '修复超时'
+        );
+        parsed = parseLlmJson(repaired);
+      }
+
+      if (!parsed.ok) return [];
+      const arr = Array.isArray(parsed.value)
+        ? parsed.value
+        : Array.isArray((parsed.value as any)?.questions)
+          ? (parsed.value as any).questions
+          : parsed.value
+            ? [parsed.value]
+            : [];
+
+      return arr
+        .map((it: any) => ({
+          question: String(it?.question || '').trim(),
+          answer: String(it?.answer || '').trim(),
+        }))
+        .filter((it: any) => it.question);
+    };
+
+    let data = await generateOnce(buildPrompt(false));
+    if (!isSubjectConsistent(data)) {
+      data = await generateOnce(buildPrompt(true));
     }
 
-    if (!parsed.ok) {
-        throw new Error('生成失败，无法解析为 JSON');
+    if (!data || data.length === 0) {
+      throw new Error('生成失败，请稍后重试');
     }
-    
-    // 确保返回的是数组
-    const data = Array.isArray(parsed.value) ? parsed.value : 
-                 (parsed.value.questions ? parsed.value.questions : [parsed.value]);
+    if (!isSubjectConsistent(data)) {
+      throw new Error('生成内容与学科不匹配，请重试');
+    }
 
-    res.json({ success: true, data });
+    res.json({ success: true, data: data.slice(0, n) });
 
   } catch (error: any) {
     console.error('❌ 生成变式题失败:', error);
@@ -1908,12 +2086,24 @@ app.post('/api/analyze-images/jobs/:jobId/retry', (req, res) => {
     return res.status(400).json({ success: false, errorMessage: '作业正在进行中，无法重试' });
   }
 
+  const bypassCacheRaw = (req.query as any)?.bypassCache;
+  const bypassCache =
+    bypassCacheRaw === '1' || bypassCacheRaw === 1 || String(bypassCacheRaw || '').trim().toLowerCase() === 'true';
+
   job.status = 'pending';
   job.stage = 'queued';
   job.errorMessage = undefined;
   job.partialResult = undefined;
   job.result = undefined;
   job.events = [];
+  if (bypassCache) {
+    try {
+      const key = job.cacheKey || computeImageAnalyzeCacheKey(job.request);
+      imageAnalyzeResultCache.delete(key);
+      job.cacheKey = key;
+    } catch {}
+    job.bypassCache = true;
+  }
   job.updatedAt = Date.now();
 
   for (let i = imageAnalyzeJobQueue.length - 1; i >= 0; i -= 1) {
@@ -1936,7 +2126,7 @@ app.post('/api/analyze-images/jobs/:jobId/retry', (req, res) => {
   imageAnalyzeJobQueue.push(jobId);
   pumpImageAnalyzeQueue();
 
-  return res.json({ success: true });
+  return res.json({ success: true, bypassCache });
 });
 
 app.get('/api/analyze-images/jobs/:jobId', (req, res) => {
@@ -2237,9 +2427,19 @@ ${rawContent}
   }
 });
 
+if (HAS_WEB_DIST) {
+  app.use(express.static(WEB_DIST_DIR, { index: false }));
+  app.get(/^(?!\/api(?:\/|$)).*/, (req, res) => {
+    res.sendFile(WEB_INDEX_HTML);
+  });
+}
+
 // 3. 启动服务
 app.listen(PORT, () => {
   console.log(`\n🚀 后端服务已启动: http://localhost:${PORT}`);
   console.log(`👉 分析接口地址: http://localhost:${PORT}/api/analyze-exam`);
   console.log(`👉 练习生成接口: http://localhost:${PORT}/api/generate-practice`);
+  if (HAS_WEB_DIST) {
+    console.log(`👉 Web 已托管: http://localhost:${PORT}/`);
+  }
 });

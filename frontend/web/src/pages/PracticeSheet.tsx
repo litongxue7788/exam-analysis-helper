@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Printer, Layout, CheckCircle, XCircle, HelpCircle, PlayCircle } from 'lucide-react';
+import { LatexRenderer } from '../components/LatexRenderer';
 
 interface PracticeSheetProps {
   data: any;
@@ -106,6 +107,23 @@ export const PracticeSheet: React.FC<PracticeSheetProps> = ({ data, onBack, onAc
     layoutMode: 'list' // 'list' | 'a4' | 'card'
   });
 
+  const escapeHtml = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const cleanPrint = (v: any) => {
+    const controlCharsRe = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g;
+    const s = String(v ?? '')
+      .replace(controlCharsRe, '')
+      .replace(/\\f(?=\\)/g, '')
+      .trim();
+    return escapeHtml(s).replace(/\n/g, '<br/>');
+  };
+
   const handleToggleHint = (id: string) => {
     setAcceptanceState(prev => ({
       ...prev,
@@ -168,8 +186,8 @@ export const PracticeSheet: React.FC<PracticeSheetProps> = ({ data, onBack, onAc
             ${problems.map((p: any, i: number) => `
               <div class="diagnosis-item">
                 <span class="d-index">${i + 1}.</span>
-                <span class="d-name">【${p.name}】</span>
-                <span class="d-desc">${p.desc}</span>
+                <span class="d-name">【${cleanPrint(p.name)}】</span>
+                <span class="d-desc">${cleanPrint(p.desc)}</span>
               </div>
             `).join('')}
           </div>
@@ -181,18 +199,18 @@ export const PracticeSheet: React.FC<PracticeSheetProps> = ({ data, onBack, onAc
     if (hasPaper) {
       contentHtml = practicePaper.sections.map((section: any) => `
         <div class="section">
-          <h3>${section.name}</h3>
+          <h3>${cleanPrint(section.name)}</h3>
           <div class="questions">
             ${section.questions.map((q: any, i: number) => `
               <div class="question-item ${printOptions.addWorkspace ? 'with-workspace' : ''}">
                 <div class="q-header">
                   <span class="q-no">${q.no}.</span>
-                  <div class="q-content">${q.content}</div>
+                  <div class="q-content">${cleanPrint(q.content)}</div>
                 </div>
                 ${printOptions.showHints && q.hints && q.hints.length > 0 ? `
                   <div class="q-hints">
                     <div class="hint-label">💡 思路点拨：</div>
-                    ${q.hints.map((h: string) => `<div>• ${h}</div>`).join('')}
+                    ${q.hints.map((h: string) => `<div>• ${cleanPrint(h)}</div>`).join('')}
                   </div>
                 ` : ''}
                 ${printOptions.addWorkspace ? `
@@ -213,7 +231,7 @@ export const PracticeSheet: React.FC<PracticeSheetProps> = ({ data, onBack, onAc
     } else {
       contentHtml = `<ol>${practiceQuestions.map((q, index) => `
         <li class="${printOptions.addWorkspace ? 'with-workspace-simple' : ''}">
-          <div class="simple-q-content">${q}</div>
+          <div class="simple-q-content">${cleanPrint(q)}</div>
           ${printOptions.addWorkspace ? `
             <div class="simple-reflection">错因自查：□ 概念不清 □ 计算失误 □ 审题漏条件 □ 步骤不完整 □ 时间不够</div>
             <div class="simple-workspace"></div>
@@ -438,20 +456,24 @@ export const PracticeSheet: React.FC<PracticeSheetProps> = ({ data, onBack, onAc
                   <div className="practice-paper-view">
                     {practicePaper.sections.map((section: any, idx: number) => (
                       <div key={idx} id={`paper-sec-${idx}`} className="paper-section" style={{ marginBottom: 24 }}>
-                        <div className="paper-section-title" style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 12 }}>{section.name}</div>
+                        <div className="paper-section-title" style={{ fontSize: 16, fontWeight: 'bold', marginBottom: 12 }}>
+                          <LatexRenderer text={section.name} />
+                        </div>
                         <div className="paper-questions">
                           {section.questions.map((q: any, qIdx: number) => (
                             <div key={qIdx} className="paper-question-item" style={{ marginBottom: 20 }}>
                               <div className="pq-content" style={{ fontSize: 15, marginBottom: 8 }}>
                                 <span style={{ fontWeight: 'bold', marginRight: 6 }}>{q.no}.</span>
-                                {q.content}
+                                <LatexRenderer text={String(q.content || '')} />
                               </div>
                               
                               {printOptions.showHints && Array.isArray(q.hints) && q.hints.length > 0 && (
                                 <div style={{ background: '#f9f9f9', padding: 8, borderRadius: 4, fontSize: 12, color: '#666', marginBottom: 8 }}>
                                   <div style={{ fontWeight: 'bold', marginBottom: 4 }}>💡 思路点拨：</div>
                                   {q.hints.slice(0, 3).map((h: string, hi: number) => (
-                                    <div key={hi}>• {h}</div>
+                                    <div key={hi}>
+                                      • <LatexRenderer text={String(h || '')} />
+                                    </div>
                                   ))}
                                 </div>
                               )}
@@ -476,7 +498,9 @@ export const PracticeSheet: React.FC<PracticeSheetProps> = ({ data, onBack, onAc
                   <ol className="suggestion-list">
                     {practiceQuestions.map((q, index) => (
                       <li key={index} style={{ marginBottom: 20 }}>
-                        <div>{q}</div>
+                        <div>
+                          <LatexRenderer text={String(q || '')} />
+                        </div>
                         {printOptions.addWorkspace && (
                           <>
                             <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
@@ -550,7 +574,7 @@ export const PracticeSheet: React.FC<PracticeSheetProps> = ({ data, onBack, onAc
                     </div>
 
                     <div style={{ fontSize: 16, lineHeight: 1.6, marginBottom: 24 }}>
-                      {q.content}
+                      <LatexRenderer text={String(q.content || '')} />
                     </div>
 
                     {/* Hint Section */}
@@ -568,7 +592,9 @@ export const PracticeSheet: React.FC<PracticeSheetProps> = ({ data, onBack, onAc
                                 <div style={{ background: '#FFF3E0', padding: 12, borderRadius: 6, border: '1px dashed #FFB74D' }}>
                                     <div style={{ fontSize: 12, fontWeight: 'bold', color: '#EF6C00', marginBottom: 4 }}>💡 思路点拨：</div>
                                     {q.hints.map((h: string, hi: number) => (
-                                        <div key={hi} style={{ fontSize: 13, color: '#555', marginBottom: 2 }}>• {h}</div>
+                                        <div key={hi} style={{ fontSize: 13, color: '#555', marginBottom: 2 }}>
+                                          • <LatexRenderer text={String(h || '')} />
+                                        </div>
                                     ))}
                                 </div>
                             )}

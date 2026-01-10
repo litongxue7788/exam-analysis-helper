@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, CheckCircle, AlertCircle, RotateCcw } from 'lucide-react';
+import { LatexRenderer } from './LatexRenderer';
 
 interface Question {
   no: number;
@@ -202,7 +203,7 @@ export const AcceptanceModal: React.FC<AcceptanceModalProps> = ({ isOpen, onClos
             <div>
               <div style={{ fontSize: 13, color: '#999', marginBottom: 8 }}>题目 {currentIndex + 1}</div>
               <div style={{ fontSize: 16, fontWeight: 500, lineHeight: 1.6, color: '#333', marginBottom: 24 }}>
-                {currentQ.content}
+                <LatexRenderer text={currentQ.content} />
               </div>
 
               {/* Hints Area */}
@@ -227,7 +228,9 @@ export const AcceptanceModal: React.FC<AcceptanceModalProps> = ({ isOpen, onClos
                             提示 {idx + 1} {isRevealed ? '' : '(点击解锁)'}
                           </div>
                           {isRevealed && (
-                            <div style={{ fontSize: 13, color: '#333' }}>{h}</div>
+                            <div style={{ fontSize: 13, color: '#333' }}>
+                              <LatexRenderer text={h} />
+                            </div>
                           )}
                         </div>
                       );
