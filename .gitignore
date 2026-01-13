@@ -1,18 +1,41 @@
+# Dependencies
 **/node_modules/
-**/dist/
-**/.DS_Store
+node_modules/
 
-# Local env / secrets
+# Build outputs
+**/dist/
+dist/
+build/
+
+# Environment variables (敏感信息)
 .env
 **/.env
 **/.env.*
-config/llm.json
 !**/.env.example
 
-# Local guides that contain access codes
-试点授权口令操作指南.txt
+# Data directories (运行时数据)
+data/
+**/data/
+logs/
+**/logs/
 
-# Local deploy outputs
-deploy/
+# IDE
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.log
+*.tmp
+*.cache
+
+# Archives
 *.zip
 *.tgz
+*.tar.gz
+
+# Local config (敏感信息)
+config/llm.json
+试点授权口令操作指南.txt
