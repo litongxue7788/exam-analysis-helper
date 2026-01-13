@@ -48,6 +48,13 @@ export const LowConfidenceConfirmDialog: React.FC<LowConfidenceConfirmDialogProp
     onConfirm('cancel');
   };
 
+  // 点击遮罩层关闭对话框
+  const handleOverlayClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.target === e.currentTarget) {
+      handleCancel();
+    }
+  };
+
   const getConfidenceColor = () => {
     if (confidence >= 0.7) return '#10b981';
     if (confidence >= 0.5) return '#f59e0b';
@@ -61,8 +68,8 @@ export const LowConfidenceConfirmDialog: React.FC<LowConfidenceConfirmDialogProp
   };
 
   return (
-    <div className="low-confidence-dialog-overlay">
-      <div className="low-confidence-dialog">
+    <div className="low-confidence-dialog-overlay" onClick={handleOverlayClick}>
+      <div className="low-confidence-dialog" onClick={(e) => e.stopPropagation()}>
         {/* 标题 */}
         <div className="dialog-header">
           <div className="dialog-icon warning">
