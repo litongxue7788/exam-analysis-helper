@@ -2,7 +2,29 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    
+    <!-- ✅ 移动端优化: Viewport设置 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes, viewport-fit=cover" />
+    
+    <!-- ✅ 移动端优化: iOS状态栏样式 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    
+    <!-- ✅ 移动端优化: 主题颜色 -->
+    <meta name="theme-color" content="#2563eb" />
+    
+    <!-- ✅ PWA: Manifest -->
+    <link rel="manifest" href="/manifest.json" />
+    
+    <!-- ✅ PWA: 图标 -->
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    
+    <!-- SEO -->
+    <meta name="description" content="智能试卷分析助手，快速识别错题，生成学习建议和练习题" />
+    <meta name="keywords" content="试卷分析,错题分析,学习助手,智能教育" />
+    
     <title>试卷分析助手</title>
   </head>
   <body>

@@ -4,12 +4,22 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import Papa from 'papaparse';
-import { Settings, Image as ImageIcon, Camera, FileSpreadsheet, ChevronRight, RefreshCw, GripVertical, Eye, RotateCw, Trash2, ArrowUp, ArrowDown, Plus } from 'lucide-react';
+import { Settings, Image as ImageIcon, Camera, FileSpreadsheet, ChevronRight, RefreshCw, GripVertical, Eye, RotateCw, Trash2, ArrowUp, ArrowDown, Plus, Clock } from 'lucide-react';
 import { AnalyzeExamRequest, AnalyzeExamResponse } from '../types/api';
 import { StudentProfile } from '../types/profile';
 import { SettingsModal } from '../components/SettingsModal';
 import { Dashboard } from '../components/Dashboard';
 import { StudentProfileModal } from '../components/StudentProfileModal';
+import { HistoryList } from '../components/HistoryList';
+import { saveHistory, generateThumbnail, HistoryRecord } from '../utils/historyManager';
+import { calculateCombinedHash } from '../utils/imageHash';
+import { checkCache, saveCache } from '../utils/cacheManager';
+import { 
+  updateStudentInfoPreference, 
+  updateExamPreference, 
+  getRecommendedExamName,
+  matchSimilarExam 
+} from '../utils/preferencesManager';
 
 const getThemeColor = (subject: string) => {
   const s = String(subject || '').toLowerCase();
@@ -111,6 +121,24 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [isDropActive, setIsDropActive] = useState(false);
+  
+  // ✅ UX优化: 自动分析状态管理
+  const [autoAnalysisTimer, setAutoAnalysisTimer] = useState<number | null>(null);
+  const [autoAnalysisCountdown, setAutoAnalysisCountdown] = useState<number>(0);
+  const autoAnalysisTimerRef = useRef<number | null>(null);
+  const countdownIntervalRef = useRef<number | null>(null);
+  
+  // ✅ UX优化: 自动重试状态管理
+  const [retryCount, setRetryCount] = useState(0);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const maxRetries = 3;
+  
+  // ✅ P1优化: 缓存加速状态管理
+  const [cacheChecking, setCacheChecking] = useState(false);
+  const [cacheHit, setCacheHit] = useState(false);
+  const [cacheData, setCacheData] = useState<any>(null);
+  const [skipCache, setSkipCache] = useState(false);
+  
   const queueItemsRef = useRef<
     {
       id: string;
@@ -485,6 +513,149 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const excelInputRef = useRef<HTMLInputElement>(null);
 
+  // ✅ UX优化: 自动分析功能
+  // 启动自动分析倒计时
+  const startAutoAnalysisCountdown = React.useCallback(() => {
+    // 清除现有倒计时
+    if (autoAnalysisTimerRef.current) {
+      clearTimeout(autoAnalysisTimerRef.current);
+      autoAnalysisTimerRef.current = null;
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    
+    // 启动新倒计时（3秒）
+    setAutoAnalysisCountdown(3);
+    
+    // 3秒后自动开始分析
+    const timer = window.setTimeout(() => {
+      handleGenerateReportWithRetry();
+      setAutoAnalysisCountdown(0);
+    }, 3000);
+    
+    autoAnalysisTimerRef.current = timer;
+    setAutoAnalysisTimer(timer);
+    
+    // 倒计时显示（每秒更新）
+    const countdownInterval = window.setInterval(() => {
+      setAutoAnalysisCountdown((prev) => {
+        if (prev <= 1) {
+          if (countdownIntervalRef.current) {
+            clearInterval(countdownIntervalRef.current);
+            countdownIntervalRef.current = null;
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    
+    countdownIntervalRef.current = countdownInterval;
+  }, []);
+
+  // 取消自动分析
+  const cancelAutoAnalysis = React.useCallback(() => {
+    if (autoAnalysisTimerRef.current) {
+      clearTimeout(autoAnalysisTimerRef.current);
+      autoAnalysisTimerRef.current = null;
+    }
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+    setAutoAnalysisTimer(null);
+    setAutoAnalysisCountdown(0);
+  }, []);
+
+  // 立即开始分析
+  const startAnalysisNow = React.useCallback(() => {
+    cancelAutoAnalysis();
+    handleGenerateReportWithRetry();
+  }, [cancelAutoAnalysis]);
+
+  // 清理定时器
+  React.useEffect(() => {
+    return () => {
+      if (autoAnalysisTimerRef.current) {
+        clearTimeout(autoAnalysisTimerRef.current);
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+      }
+    };
+  }, []);
+
+  // ✅ UX优化: 全页面拖拽支持
+  React.useEffect(() => {
+    let dragCounter = 0; // 用于跟踪嵌套元素的拖拽事件
+    
+    const handleDragEnter = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      // 检查是否包含文件
+      if (e.dataTransfer?.types?.includes('Files')) {
+        dragCounter++;
+        if (dragCounter === 1) {
+          setIsDropActive(true);
+        }
+      }
+    };
+    
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      if (e.dataTransfer?.types?.includes('Files')) {
+        e.dataTransfer.dropEffect = 'copy';
+        setIsDropActive(true);
+      }
+    };
+    
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      dragCounter--;
+      if (dragCounter === 0) {
+        setIsDropActive(false);
+      }
+    };
+    
+    const handleDrop = async (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      
+      dragCounter = 0;
+      setIsDropActive(false);
+      
+      const files = Array.from(e.dataTransfer?.files || []);
+      const imageFiles = files.filter(f => f.type.startsWith('image/'));
+      
+      if (imageFiles.length > 0) {
+        addQueueFiles(imageFiles);
+        showToast(`✅ 已添加 ${imageFiles.length} 张图片`);
+        // 自动分析倒计时已在 addQueueFiles 中触发
+      } else if (files.length > 0) {
+        showToast('⚠️ 请拖放图片文件（支持 JPG、PNG 等格式）');
+      }
+    };
+    
+    document.addEventListener('dragenter', handleDragEnter);
+    document.addEventListener('dragover', handleDragOver);
+    document.addEventListener('dragleave', handleDragLeave);
+    document.addEventListener('drop', handleDrop);
+    
+    return () => {
+      document.removeEventListener('dragenter', handleDragEnter);
+      document.removeEventListener('dragover', handleDragOver);
+      document.removeEventListener('dragleave', handleDragLeave);
+      document.removeEventListener('drop', handleDrop);
+    };
+  }, []);
+
   // --- 事件处理 ---
 
   // 处理文件选择
@@ -504,6 +675,11 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         };
       });
       setQueueItems((prev) => [...prev, ...nextItems]);
+      
+      // ✅ UX优化: 如果是图片，启动自动分析倒计时
+      if (type === 'image') {
+        startAutoAnalysisCountdown();
+      }
       
       // 如果是Excel，尝试预解析以显示概览
       if (type === 'excel' && selectedFiles[0].name.endsWith('.csv')) {
@@ -533,6 +709,12 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
     });
 
     setQueueItems((prev) => [...prev, ...nextItems]);
+
+    // ✅ UX优化: 如果有图片文件，启动自动分析倒计时
+    const hasImages = nextItems.some(item => item.kind === 'image');
+    if (hasImages) {
+      startAutoAnalysisCountdown();
+    }
 
     const csv = files.find((f) => /\.csv$/i.test(f.name));
     if (csv) parsePreview(csv);
@@ -732,6 +914,39 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
     });
   };
 
+  // ✅ UX优化: 自动重试包装函数
+  const handleGenerateReportWithRetry = async (retryAttempt: number = 0): Promise<void> => {
+    try {
+      await handleGenerateReport();
+      // 成功后重置重试计数
+      setRetryCount(0);
+      setIsRetrying(false);
+    } catch (error: any) {
+      const isNetworkError = 
+        !navigator.onLine || 
+        error?.name === 'TypeError' || 
+        error?.message?.includes('Failed to fetch') ||
+        error?.message?.includes('Network') ||
+        error?.message?.includes('NetworkError');
+      
+      if (isNetworkError && retryAttempt < maxRetries) {
+        setIsRetrying(true);
+        setRetryCount(retryAttempt + 1);
+        showToast(`🔄 网络错误，正在重试 (${retryAttempt + 1}/${maxRetries})...`);
+        
+        // 延迟重试（指数退避：1s, 2s, 4s）
+        const delay = Math.min(1000 * Math.pow(2, retryAttempt), 5000);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        
+        return handleGenerateReportWithRetry(retryAttempt + 1);
+      } else {
+        setIsRetrying(false);
+        setRetryCount(0);
+        throw error; // 重新抛出错误，让原有的错误处理逻辑处理
+      }
+    }
+  };
+
   // 执行分析并跳转 (生成个人分析报告)
   const handleGenerateReport = async () => {
     if (!canStart) {
@@ -749,6 +964,65 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
     try {
       // 场景 1: 如果有上传的图片，优先使用图片分析 API
       if (imageItems.length > 0) {
+        // ✅ P1优化: 缓存加速 - 检查缓存
+        if (!skipCache) {
+          setCacheChecking(true);
+          try {
+            // 计算图片组合哈希
+            const imageFiles = imageItems.map(item => item.file);
+            const hash = await calculateCombinedHash(imageFiles);
+            
+            // 检查缓存
+            const cachedEntry = await checkCache(hash);
+            
+            if (cachedEntry) {
+              // 缓存命中！
+              setCacheHit(true);
+              setCacheData(cachedEntry);
+              setCacheChecking(false);
+              
+              const cacheAge = Math.floor(
+                (new Date().getTime() - new Date(cachedEntry.timestamp).getTime()) / (1000 * 60)
+              );
+              const cacheAgeText = cacheAge < 60 
+                ? `${cacheAge} 分钟前` 
+                : `${Math.floor(cacheAge / 60)} 小时前`;
+              
+              showToast(`✅ 使用缓存结果（${cacheAgeText}）`);
+              
+              // 直接使用缓存结果
+              const reportData = {
+                ...cachedEntry.result,
+                studentInfo: { ...studentInfo }, // 使用当前学生信息
+                fromCache: true,
+                cacheTimestamp: cachedEntry.timestamp
+              };
+              
+              // ✅ P1优化: 保存用户偏好
+              try {
+                updateStudentInfoPreference({
+                  name: studentInfo.name,
+                  grade: studentInfo.grade,
+                  subject: studentInfo.subject,
+                  className: studentInfo.className
+                });
+                updateExamPreference(studentInfo.subject, studentInfo.examName || '期中考试');
+              } catch (error) {
+                console.error('保存用户偏好失败:', error);
+              }
+              
+              setLoading(false);
+              onAnalyzeComplete(reportData);
+              return;
+            }
+          } catch (error) {
+            console.error('缓存检查失败:', error);
+            // 缓存失败不影响主流程，继续正常分析
+          } finally {
+            setCacheChecking(false);
+          }
+        }
+        
         // 1. 转 Base64
         const base64Images = await Promise.all(imageItems.map((x) => fileToBase64(x.file, x.rotation)));
 
@@ -759,11 +1033,11 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         }
         
         // 2. 创建异步分析作业并跳转
+        // ✅ P0优化: 不传 grade 和 subject，让后端自动识别（零输入分析）
         const payload = {
           images: base64Images,
           provider: llmConfig.provider,
-          subject: studentInfo.subject, // Pass the selected subject
-          grade: studentInfo.grade, // Pass the grade for tone adjustment
+          // subject 和 grade 已移除，系统将自动识别
         };
 
         const controller = new AbortController();
@@ -824,6 +1098,63 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
           }
         };
 
+        // ✅ P1优化: 保存图片哈希到 localStorage（用于后续缓存保存）
+        try {
+          const imageFiles = imageItems.map(item => item.file);
+          const hash = await calculateCombinedHash(imageFiles);
+          localStorage.setItem('pendingCacheHash', hash);
+          localStorage.setItem('pendingCacheJobId', jobId);
+        } catch (error) {
+          console.error('保存缓存哈希失败:', error);
+          // 不影响主流程，继续执行
+        }
+        
+        // ✅ P1优化: 保存到历史记录
+        try {
+          // 生成缩略图（如果有图片）
+          let thumbnail: string | undefined;
+          if (imageItems.length > 0 && imageItems[0].previewUrl) {
+            thumbnail = await generateThumbnail(imageItems[0].previewUrl);
+          }
+          
+          // 保存历史记录（初始版本，后续会在分析完成时更新）
+          const historyRecord = {
+            studentInfo: {
+              name: studentInfo.name,
+              grade: studentInfo.grade,
+              subject: studentInfo.subject,
+              examName: studentInfo.examName || '期中考试'
+            },
+            summary: {
+              totalScore: 0, // 初始值，后续会更新
+              fullScore: 100
+            },
+            thumbnail
+          };
+          const historyId = saveHistory(historyRecord);
+          
+          // 保存历史记录ID到localStorage，用于后续更新
+          if (historyId) {
+            localStorage.setItem('currentHistoryId', historyId);
+          }
+        } catch (error) {
+          console.error('保存历史记录失败:', error);
+          // 不影响主流程，继续执行
+        }
+        
+        // ✅ P1优化: 保存用户偏好
+        try {
+          updateStudentInfoPreference({
+            name: studentInfo.name,
+            grade: studentInfo.grade,
+            subject: studentInfo.subject,
+            className: studentInfo.className
+          });
+          updateExamPreference(studentInfo.subject, studentInfo.examName || '期中考试');
+        } catch (error) {
+          console.error('保存用户偏好失败:', error);
+        }
+
         onAnalyzeComplete(reportData);
 
       } else if (dashboardData) {
@@ -868,6 +1199,51 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
             },
             practiceQuestions
         };
+        
+        // ✅ P1优化: 保存到历史记录（Excel导入完整数据）
+        try {
+          const historyId = saveHistory({
+            studentInfo: {
+              name: studentInfo.name,
+              grade: studentInfo.grade,
+              subject: studentInfo.subject,
+              examName: studentInfo.examName || '期中考试'
+            },
+            summary: {
+              totalScore: dashboardData.score,
+              fullScore: dashboardData.fullScore,
+              classAverage: dashboardData.classAverage,
+              scoreChange: dashboardData.scoreChange,
+              strongestKnowledge: dashboardData.strongestKnowledge,
+              weakestKnowledge: dashboardData.weakestKnowledge,
+              overview: dashboardData.summary
+            },
+            fullData: {
+              typeAnalysis: dashboardData.typeAnalysis,
+              modules: reportData.modules,
+              practiceQuestions: practiceQuestions
+            }
+          });
+          
+          // Excel导入是同步的，不需要保存ID用于后续更新
+          console.log('✅ Excel导入历史记录保存成功:', historyId);
+        } catch (error) {
+          console.error('保存历史记录失败:', error);
+        }
+        
+        // ✅ P1优化: 保存用户偏好
+        try {
+          updateStudentInfoPreference({
+            name: studentInfo.name,
+            grade: studentInfo.grade,
+            subject: studentInfo.subject,
+            className: studentInfo.className
+          });
+          updateExamPreference(studentInfo.subject, studentInfo.examName || '期中考试');
+        } catch (error) {
+          console.error('保存用户偏好失败:', error);
+        }
+        
         onAnalyzeComplete(reportData);
       }
 
@@ -877,17 +1253,17 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
       const status = Number((error as any)?.status || 0);
 
       if (typeof navigator !== 'undefined' && !navigator.onLine) {
-        showToast('分析失败：当前网络连接异常，请检查 Wi-Fi/数据网络后重试。');
+        showToast('❌ 网络连接失败\n请检查您的网络连接后重试');
         return;
       }
 
       if (String(error?.name || '') === 'AbortError') {
-        showToast('分析超时：请减少图片数量或稍后重试。');
+        showToast('⏱️ 分析超时\n建议：减少图片数量或稍后重试');
         return;
       }
 
       if (status === 401 || msg.includes('访问口令')) {
-        showToast('访问口令错误或缺失：请在设置中填写正确的口令。');
+        showToast('🔒 访问口令错误\n请在设置中填写正确的口令');
         return;
       }
 
@@ -902,35 +1278,35 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
             const dd = String(d.getDate()).padStart(2, '0');
             const hh = String(d.getHours()).padStart(2, '0');
             const mm = String(d.getMinutes()).padStart(2, '0');
-            showToast(`今日使用额度已用完，将于 ${y}-${m}-${dd} ${hh}:${mm} 重置`);
+            showToast(`📊 今日额度已用完\n将于 ${y}-${m}-${dd} ${hh}:${mm} 重置`);
             return;
           }
         }
-        showToast(msg || '请求过于频繁，请稍后再试。');
+        showToast('⚠️ 请求过于频繁\n请稍后再试');
         return;
       }
 
       if (msg.includes('API Key') || msg.includes('未配置')) {
-        showToast('后端大模型配置异常（API Key 或模型未配置），请检查服务器环境或更换服务商。');
+        showToast('⚙️ 服务配置异常\nAPI Key未配置，请联系管理员');
         return;
       }
 
       if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-        showToast('无法连接到分析服务器，请确认后端已启动并检查网络。');
+        showToast('🌐 无法连接服务器\n请确认后端已启动并检查网络');
         return;
       }
 
       if (msg.includes('图片分析失败')) {
-        showToast(msg);
+        showToast(`❌ ${msg}`);
         return;
       }
 
       if (!msg) {
-        showToast('服务器暂时不可用，请稍后再试。');
+        showToast('⚠️ 服务暂时不可用\n请稍后再试');
         return;
       }
 
-      showToast(`分析失败：${msg}`);
+      showToast(`❌ 分析失败\n${msg}`);
     } finally {
       setLoading(false);
     }
@@ -948,6 +1324,9 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         ['--theme-cta' as any]: getThemeColor(studentInfo.subject),
       }}
     >
+      {/* ✅ P1优化: 全页面拖拽高亮覆盖层 */}
+      <div className={`global-drop-overlay ${isDropActive ? 'active' : ''}`} />
+      
       <div className="context-bar">
         <div className="context-left">
           <div className="context-info">
@@ -991,8 +1370,8 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
           </button>
         </div>
         <div className="context-actions control-panel">
-          <button className="settings-btn" onClick={() => setIsHistoryOpen(true)} title="切换考试">
-            <RefreshCw size={20} color="#64748b" />
+          <button className="settings-btn" onClick={() => setIsHistoryOpen(true)} title="历史记录">
+            <Clock size={20} color="#64748b" />
           </button>
           <button className="settings-btn" onClick={() => setIsSettingsOpen(true)} title="设置">
             <Settings size={20} color="#64748b" />
@@ -1019,77 +1398,44 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
 
       {/* 历史记录弹窗 */}
       {isHistoryOpen && (
-        <div className="settings-overlay" style={{
-            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,0.5)', zIndex: 100,
-            display: 'flex', justifyContent: 'center', alignItems: 'center'
-        }}>
-            <div className="history-modal">
-                <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16}}>
-                    <h3>历史考试记录</h3>
-                    <button className="close-capsule-btn" onClick={() => setIsHistoryOpen(false)}>×</button>
-                </div>
-                
-                {/* 汇总分析入口 (New Feature Placeholder) */}
-                <div className="history-aggregate-card" onClick={() => {
-                    setIsHistoryOpen(false);
-                    setIsTrendsOpen(true);
-                }}>
-                    <div style={{display: 'flex', alignItems: 'center'}}>
-                        <div className="aggregate-icon-wrapper">
-                             <span style={{fontSize: 18}}>📈</span>
-                        </div>
-                        <div>
-                            <div className="aggregate-title">学情趋势分析</div>
-                            <div className="aggregate-subtitle">汇总分析所有历史考试报告</div>
-                        </div>
-                    </div>
-                </div>
-
-                {history.length === 0 ? (
-                    <div style={{textAlign: 'center', color: '#999', padding: 20}}>暂无历史记录</div>
-                ) : (
-                    <div className="history-list">
-                        {history.map((exam, index) => (
-                            <div key={index} className="history-item" 
-                                onClick={() => {
-                                    if (onSwitchExam) onSwitchExam(index);
-                                    setIsHistoryOpen(false);
-                                }}
-                            >
-                                <div>
-                                    <div style={{fontWeight: 'bold'}}>
-                                        {exam.studentInfo?.examName || '未命名考试'}
-                                        <span style={{fontSize: 12, fontWeight: 'normal', color: '#666', marginLeft: 8}}>
-                                            {exam.studentInfo?.subject}
-                                        </span>
-                                        {exam.acceptanceResult?.passed && (
-                                            <span style={{
-                                                fontSize: 10, 
-                                                color: '#fff', 
-                                                background: '#4CAF50', 
-                                                padding: '2px 6px', 
-                                                borderRadius: 4, 
-                                                marginLeft: 8,
-                                                verticalAlign: 'middle'
-                                            }}>
-                                                已验收
-                                            </span>
-                                        )}
-                                    </div>
-                                    <div style={{fontSize: 12, color: '#999'}}>
-                                        {exam.studentInfo?.name} · {new Date(exam.timestamp || Date.now()).toLocaleDateString()}
-                                    </div>
-                                </div>
-                                <div style={{fontSize: 16, fontWeight: 'bold', color: '#66BB6A'}}>
-                                    {exam.summary?.totalScore}分
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
-        </div>
+        <HistoryList
+          onSelect={(record) => {
+            // 从历史记录加载完整考试数据
+            const examData = {
+              studentInfo: record.studentInfo,
+              summary: {
+                totalScore: record.summary.totalScore,
+                fullScore: record.summary.fullScore,
+                classAverage: record.summary.classAverage ?? 79,
+                classRank: record.summary.classRank ?? 0,
+                totalStudents: record.summary.totalStudents ?? 50,
+                scoreChange: record.summary.scoreChange ?? 0,
+                overview: record.summary.overview ?? '',
+                strongestKnowledge: record.summary.strongestKnowledge ?? '',
+                weakestKnowledge: record.summary.weakestKnowledge ?? ''
+              },
+              // 恢复完整数据（如果存在）
+              typeAnalysis: record.fullData?.typeAnalysis ?? [],
+              modules: record.fullData?.modules ?? {
+                evaluation: [],
+                problems: [],
+                keyErrors: [],
+                advice: { content: [], habit: [] }
+              },
+              paperAppearance: record.fullData?.paperAppearance,
+              practiceQuestions: record.fullData?.practiceQuestions,
+              practicePaper: record.fullData?.practicePaper,
+              acceptanceQuiz: record.fullData?.acceptanceQuiz,
+              review: record.fullData?.review,
+              studyMethods: record.fullData?.studyMethods,
+              recognition: record.fullData?.recognition,
+              job: record.fullData?.job ?? { status: 'completed', stage: 'completed' }
+            };
+            onAnalyzeComplete(examData);
+            setIsHistoryOpen(false);
+          }}
+          onClose={() => setIsHistoryOpen(false)}
+        />
       )}
 
       {/* 趋势分析弹窗 (V4.0 学情档案) */}
@@ -1103,7 +1449,104 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
       {/* 2. 可滚动内容区 */}
       <div className="home-content" ref={homeContentRef}>
         
-        {/* 0. 学科切换 */}
+        {/* ✅ UX优化: 自动分析倒计时横幅 */}
+        {autoAnalysisCountdown > 0 && (
+          <div style={{
+            margin: '16px 20px 0 20px',
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            borderRadius: 12,
+            padding: '14px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            boxShadow: '0 4px 12px rgba(102, 126, 234, 0.3)',
+            animation: 'slideDown 0.3s ease-out'
+          }}>
+            <span style={{ fontSize: 24 }}>⏱️</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: '#fff', marginBottom: 2 }}>
+                {autoAnalysisCountdown}秒后自动开始分析...
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.85)' }}>
+                继续上传图片将重置倒计时
+              </div>
+            </div>
+            <button
+              onClick={startAnalysisNow}
+              style={{
+                padding: '8px 18px',
+                borderRadius: 8,
+                fontSize: 13,
+                fontWeight: 600,
+                border: 'none',
+                background: '#fff',
+                color: '#667eea',
+                cursor: 'pointer',
+                transition: 'all 0.2s',
+                boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'translateY(-1px)';
+                e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'translateY(0)';
+                e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+              }}
+            >
+              立即分析
+            </button>
+            <button
+              onClick={cancelAutoAnalysis}
+              style={{
+                padding: '8px 18px',
+                borderRadius: 8,
+                fontSize: 13,
+                fontWeight: 500,
+                border: '1px solid rgba(255,255,255,0.3)',
+                background: 'transparent',
+                color: '#fff',
+                cursor: 'pointer',
+                transition: 'all 0.2s'
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = 'rgba(255,255,255,0.1)';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = 'transparent';
+              }}
+            >
+              取消
+            </button>
+          </div>
+        )}
+        
+        {/* ✅ UX优化: 自动重试进度横幅 */}
+        {isRetrying && (
+          <div style={{
+            margin: '16px 20px 0 20px',
+            background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)',
+            borderRadius: 12,
+            padding: '14px 20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            boxShadow: '0 4px 12px rgba(245, 158, 11, 0.3)',
+            animation: 'slideDown 0.3s ease-out'
+          }}>
+            <span style={{ fontSize: 24 }}>🔄</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 15, fontWeight: 600, color: '#fff', marginBottom: 2 }}>
+                正在重试...
+              </div>
+              <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.85)' }}>
+                第 {retryCount}/{maxRetries} 次重试
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* 0. 学科切换 - ✅ P0优化: 标记为可选，系统会自动识别 */}
         <div style={{ padding: '16px 20px 0 20px' }}>
           <div style={{ 
             background: '#fff', 
@@ -1111,10 +1554,13 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
             padding: '12px 16px',
             display: 'flex', 
             alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 8,
             boxShadow: '0 2px 8px rgba(0,0,0,0.03)'
           }}>
-            <span style={{ fontSize: 14, color: '#666', marginRight: 12 }}>当前学科:</span>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <span style={{ fontSize: 14, color: '#666', marginRight: 4 }}>当前学科:</span>
+            <span style={{ fontSize: 12, color: '#999', fontStyle: 'italic' }}>(可选，系统会自动识别)</span>
+            <div style={{ display: 'flex', gap: 8, marginLeft: 'auto' }}>
               {['数学', '语文', '英语'].map(subj => (
                 <button
                   key={subj}
@@ -1394,7 +1840,7 @@ export const Home: React.FC<HomeProps> = ({ onAnalyzeComplete, initialData, hist
         </button>
         <button
           className="op-btn-primary op-btn-icon op-btn-icon-primary"
-          onClick={handleGenerateReport}
+          onClick={() => handleGenerateReportWithRetry()}
           disabled={loading || !canStart}
           title={loading ? '分析中...' : '开始分析'}
           data-tooltip={loading ? '分析中...' : '开始分析'}

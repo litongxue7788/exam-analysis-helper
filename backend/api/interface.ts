@@ -97,6 +97,9 @@ export interface AnalyzeExamResponse {
     // (可选) 学科
     subject?: string;
 
+    // (可选) 年级
+    grade?: string;
+
     // (可选) 巩固练习题列表
     practiceQuestions?: string[];
 
@@ -120,6 +123,29 @@ export interface AnalyzeExamResponse {
       suggestions?: string[];
     };
 
+    // (可选) 低置信度警告 (新增)
+    lowConfidenceWarning?: {
+      hasWarning: boolean;
+      level: 'none' | 'low' | 'medium' | 'high';
+      message: string;
+      suggestions: string[];
+      affectedItems: string[];
+    };
+
+    // (可选) 证据来源追溯 (新增)
+    evidenceSourceTracking?: {
+      totalImages: number;
+      analysisMethod: 'batch' | 'individual';
+      trackingEnabled: boolean;
+      sources: Array<{
+        problemIndex: number;
+        imageIndex?: number;
+        imageCount: number;
+        confidence: string;
+        canViewOriginal: boolean;
+      }>;
+    };
+
     // (可选) 验收小测
     acceptanceQuiz?: {
       title: string;
@@ -129,6 +155,18 @@ export interface AnalyzeExamResponse {
         content: string;
         hints?: string[];
       }[];
+    };
+
+    // (可选) 年级学科识别信息 (UX优化)
+    recognition?: {
+      grade: string;
+      subject: string;
+      gradeConfidence: number;
+      subjectConfidence: number;
+      overallConfidence: number;
+      confidenceLevel: 'high' | 'medium' | 'low';
+      needsConfirmation: boolean;
+      source: string;
     };
   };
 }

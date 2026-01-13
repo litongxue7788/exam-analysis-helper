@@ -36,6 +36,52 @@ body {
   position: relative;
 }
 
+/* ✅ P1优化: 全页面拖拽高亮覆盖层 */
+.global-drop-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(var(--theme-rgb, 37 99 235), 0.05);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 999;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.global-drop-overlay.active {
+  opacity: 1;
+}
+
+.global-drop-overlay::after {
+  content: '📎 拖放图片到任意位置上传';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 24px;
+  font-weight: 800;
+  color: rgb(var(--theme-rgb, 37 99 235));
+  background: rgba(255, 255, 255, 0.98);
+  padding: 24px 48px;
+  border-radius: 20px;
+  box-shadow: 0 12px 40px rgba(var(--theme-rgb, 37 99 235), 0.25);
+  border: 2px dashed rgba(var(--theme-rgb, 37 99 235), 0.4);
+  animation: floatBounce 2s ease-in-out infinite;
+}
+
+@keyframes floatBounce {
+  0%, 100% {
+    transform: translate(-50%, -50%) translateY(0);
+  }
+  50% {
+    transform: translate(-50%, -50%) translateY(-10px);
+  }
+}
+
 .home-header {
   position: fixed;
   top: 0;
@@ -176,6 +222,7 @@ body {
     0 10px 15px -3px rgba(0, 0, 0, 0.02),
     0 0 0 1px rgba(255, 255, 255, 0.5) inset;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
 }
 
 .upload-deck.drop-active {
@@ -190,6 +237,60 @@ body {
 .upload-deck.drop-active .upload-table-wrap {
   border-color: rgba(var(--theme-rgb, 37 99 235), 0.3);
   background: rgba(255, 255, 255, 0.4);
+}
+
+/* ✅ P1优化: 拖拽提示覆盖层 */
+.upload-deck.drop-active::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(var(--theme-rgb, 37 99 235), 0.05);
+  border-radius: 20px;
+  pointer-events: none;
+  z-index: 1;
+  animation: pulseGlow 1.5s ease-in-out infinite;
+}
+
+/* ✅ P1优化: 拖拽提示文字 */
+.upload-deck.drop-active::after {
+  content: '📎 释放以上传';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 18px;
+  font-weight: 700;
+  color: rgb(var(--theme-rgb, 37 99 235));
+  background: rgba(255, 255, 255, 0.95);
+  padding: 16px 32px;
+  border-radius: 16px;
+  box-shadow: 0 8px 24px rgba(var(--theme-rgb, 37 99 235), 0.2);
+  pointer-events: none;
+  z-index: 2;
+  animation: bounceIn 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes bounceIn {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.8);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
 }
 
 .upload-statusbar {
@@ -1516,14 +1617,14 @@ body {
   background: rgba(15, 23, 42, 0.92);
   color: #fff;
   padding: 10px 14px;
-  border-radius: 999px;
+  border-radius: 12px;
   font-size: 13px;
   z-index: 200;
   pointer-events: none;
   max-width: 92vw;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
+  text-align: left;
+  line-height: 1.5;
 }
 
 /* 7. Bottom Dock (Fixed) */

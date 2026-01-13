@@ -3,13 +3,27 @@
 // =================================================================================
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Settings, Download, ArrowLeft, Share2, PanelRightClose, PanelRightOpen, GripHorizontal, BookOpen, LayoutDashboard, Calendar, X, Menu, ArrowRightLeft, GraduationCap } from 'lucide-react';
+import { Settings, Download, ArrowLeft, Share2, PanelRightClose, PanelRightOpen, GripHorizontal, BookOpen, LayoutDashboard, Calendar, X, Menu, ArrowRightLeft, GraduationCap, FileDown } from 'lucide-react';
 import { SettingsModal } from '../components/SettingsModal';
 import { PrintLayout } from '../components/PrintLayout';
 import { AcceptanceModal } from '../components/AcceptanceModal';
 import { StudyMethodsModal } from '../components/StudyMethodsModal';
+import { SmartConfirmBanner } from '../components/SmartConfirmBanner';
+import { ProgressiveLoadingBar } from '../components/ProgressiveLoadingBar';
+import { SkeletonLoader } from '../components/SkeletonLoader';
+import { ConfidenceBadge } from '../components/ConfidenceBadge';
+import { LowConfidenceWarning } from '../components/LowConfidenceWarning';
+import { FeedbackForm, FeedbackData } from '../components/FeedbackForm';
+import { FeedbackButton } from '../components/FeedbackButton';
+import { LowConfidenceConfirmDialog } from '../components/LowConfidenceConfirmDialog';
+import { EvidenceSourceInfo } from '../components/EvidenceSourceInfo';
 import { getAbilityInfoBySubject } from '../config/subjectConfig';
 import { LatexRenderer } from '../components/LatexRenderer';
+import { quickExportToPDF } from '../utils/pdfExport';
+import { generateShareLink, copyToClipboard as copyTextToClipboard, generateShareText, isWebShareSupported, shareViaWebShare, ShareData } from '../utils/shareManager';
+import { saveCache } from '../utils/cacheManager';
+import { calculateCombinedHash } from '../utils/imageHash';
+import { updateHistory } from '../utils/historyManager';
 
 interface ReportProps {
   data: any;
@@ -97,6 +111,48 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
       .trim();
 
     return { questionNo: questionNoFallback, score, reason, evidence, confidence, fix, rest: cleaned };
+  };
+
+  // ✅ UX优化: 实时进度反馈 - 辅助函数
+  const getStageIcon = (stage: string) => {
+    switch (stage) {
+      case 'queued': return '⏳';
+      case 'extracting': return '🔍';
+      case 'diagnosing': return '🧠';
+      case 'practicing': return '📝';
+      case 'merging': return '📊';
+      default: return '⚙️';
+    }
+  };
+
+  const getStageText = (stage: string) => {
+    switch (stage) {
+      case 'queued': return '排队中…';
+      case 'extracting': return '正在提取关键信息…';
+      case 'diagnosing': return '正在生成核心结论…';
+      case 'practicing': return '正在生成训练与验收…';
+      case 'merging': return '正在整合报告…';
+      default: return '正在分析中…';
+    }
+  };
+
+  const getConfidenceBadgeStyle = (level?: string) => {
+    switch (level) {
+      case 'high':
+        return { background: '#E8F5E9', color: '#2E7D32', border: '1px solid #C8E6C9' };
+      case 'medium':
+        return { background: '#FFF8E1', color: '#FF8F00', border: '1px solid #FFE082' };
+      case 'low':
+      case 'very-low':
+        return { background: '#FFEBEE', color: '#C62828', border: '1px solid #FFCDD2' };
+      default:
+        return { background: '#F5F5F5', color: '#666', border: '1px solid #eee' };
+    }
+  };
+
+  const getConfidenceText = (confidence: number) => {
+    const percent = Math.round(confidence * 100);
+    return `置信度 ${percent}%`;
   };
 
   const getConfidenceStyle = (confidence: string) => {
@@ -272,6 +328,9 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   const [generatingAcceptance, setGeneratingAcceptance] = useState(false);
   const [generatedAcceptanceQuiz, setGeneratedAcceptanceQuiz] = useState<any | null>(null);
   const [showIntro, setShowIntro] = useState(false);
+  // ✅ P1优化: PDF 导出状态
+  const [isExportingPDF, setIsExportingPDF] = useState(false);
+  const [pdfExportProgress, setPdfExportProgress] = useState(0);
   // 仅用于 SettingsModal 兼容
   const [llmConfig, setLlmConfig] = useState({ provider: 'doubao', apiKey: '', modelId: '' });
   const [isDesktop, setIsDesktop] = useState(() => window.innerWidth >= 768);
@@ -290,12 +349,128 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
     setTimeout(() => setToastMsg(null), 3000);
   };
 
+  // ✅ P1优化: PDF 导出处理函数
+  const handleExportPDF = async () => {
+    if (isExportingPDF) return;
+    
+    try {
+      setIsExportingPDF(true);
+      setPdfExportProgress(0);
+      
+      // 生成文件名
+      const filename = `${studentInfo.name}_${studentInfo.subject}_${studentInfo.examName}_分析报告.pdf`;
+      
+      // 导出 PDF
+      await quickExportToPDF(filename, (progress) => {
+        setPdfExportProgress(progress);
+      });
+      
+      showToast('✅ PDF 导出成功');
+    } catch (error: any) {
+      console.error('PDF 导出失败:', error);
+      showToast('❌ PDF 导出失败，请重试');
+    } finally {
+      setIsExportingPDF(false);
+      setPdfExportProgress(0);
+    }
+  };
+
+  // ✅ P1优化: 分享处理函数
+  const handleShare = async () => {
+    try {
+      const shareData: ShareData = {
+        studentName: studentInfo.name,
+        grade: studentInfo.grade,
+        subject: studentInfo.subject,
+        examName: studentInfo.examName,
+        score: summary.totalScore,
+        fullScore: summary.fullScore
+      };
+      
+      // 生成分享链接（使用 jobId 或生成唯一 ID）
+      const examId = jobId || `exam-${Date.now()}`;
+      const shareLink = generateShareLink(examId);
+      
+      // 优先使用 Web Share API（移动端）
+      if (isWebShareSupported()) {
+        const shared = await shareViaWebShare(shareData, shareLink);
+        if (shared) {
+          showToast('✅ 分享成功');
+          return;
+        }
+      }
+      
+      // 降级方案：复制链接到剪贴板
+      const success = await copyTextToClipboard(shareLink);
+      if (success) {
+        showToast('✅ 分享链接已复制到剪贴板');
+      } else {
+        showToast('❌ 复制失败，请手动复制链接');
+      }
+    } catch (error: any) {
+      console.error('分享失败:', error);
+      showToast('❌ 分享失败，请重试');
+    }
+  };
+
+  // ✅ 质量优化: 反馈提交处理函数
+  const handleFeedbackSubmit = async (feedbackData: FeedbackData) => {
+    try {
+      const response = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
+        },
+        body: JSON.stringify({
+          ...feedbackData,
+          jobId: jobId || undefined,
+          userInfo: {
+            grade: studentInfo.grade,
+            subject: studentInfo.subject,
+          },
+          timestamp: Date.now(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('提交失败');
+      }
+
+      setFeedbackSubmitted(true);
+      showToast('✅ 感谢您的反馈！');
+    } catch (error: any) {
+      console.error('提交反馈失败:', error);
+      showToast('❌ 提交失败，请重试');
+      throw error;
+    }
+  };
+
   const [planMode, setPlanMode] = useState<'normal' | '20min'>(() => (((data as any)?.planMode || '') === '20min' ? '20min' : 'normal'));
   useEffect(() => {
     const next = (((data as any)?.planMode || '') === '20min' ? '20min' : 'normal') as 'normal' | '20min';
     setPlanMode(next);
   }, [(data as any)?.planMode]);
   const isPlanCompressed = planMode === '20min';
+
+  // ✅ UX优化: 智能确认横幅状态
+  const [showConfirmBanner, setShowConfirmBanner] = useState(true);
+  const [isReanalyzing, setIsReanalyzing] = useState(false);
+  const [showLowConfidenceWarning, setShowLowConfidenceWarning] = useState(true);
+  const recognition = data?.recognition;
+
+  // ✅ UX优化: 低置信度确认对话框状态
+  const [showLowConfidenceDialog, setShowLowConfidenceDialog] = useState(false);
+  const [lowConfidenceData, setLowConfidenceData] = useState<{
+    grade: string;
+    subject: string;
+    confidence: number;
+    confidenceLevel: 'low' | 'medium' | 'high';
+  } | null>(null);
+
+  // ✅ 质量优化: 用户反馈状态
+  const [isFeedbackFormOpen, setIsFeedbackFormOpen] = useState(false);
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
 
   const [trialAccessCode, setTrialAccessCode] = useState(() => {
     try {
@@ -329,6 +504,16 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
   const [isPolling, setIsPolling] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  // ✅ UX优化: 实时进度反馈 - 识别信息状态
+  const [recognitionInfo, setRecognitionInfo] = useState<{
+    grade?: string;
+    subject?: string;
+    confidence?: number;
+    confidenceLevel?: 'high' | 'medium' | 'low' | 'very-low';
+  } | null>(null);
+  // ✅ 质量优化: 渐进式加载状态
+  const [loadingProgress, setLoadingProgress] = useState(0);
+  const [loadingEstimatedTime, setLoadingEstimatedTime] = useState(60);
   const jobStatusRef = useRef(jobStatus);
   const jobStageRef = useRef(jobStage);
   useEffect(() => {
@@ -338,8 +523,18 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
     jobStageRef.current = jobStage;
   }, [jobStage]);
 
+  // ✅ 修复: 从历史记录加载时确保jobStatus正确
+  useEffect(() => {
+    // 如果有完整数据但jobStatus为空，说明是从历史记录加载
+    if (data && summary && summary.totalScore !== undefined && !jobStatus) {
+      console.log('📋 [Report] 从历史记录加载，设置jobStatus为completed');
+      setJobStatus('completed');
+      setJobStage('completed');
+    }
+  }, [data, summary, jobStatus]);
+
   const applyAnalyzeResultToExam = useCallback(
-    (result: any, markCompleted: boolean = true) => {
+    async (result: any, markCompleted: boolean = true) => {
       const payload = result?.data;
       if (!payload) return;
 
@@ -443,10 +638,162 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         },
       };
 
+      // ✅ P1优化: 保存缓存（当分析完成时）
+      if (markCompleted) {
+        try {
+          const pendingHash = localStorage.getItem('pendingCacheHash');
+          const pendingJobId = localStorage.getItem('pendingCacheJobId');
+          
+          // 确保是当前作业的缓存
+          if (pendingHash && pendingJobId === jobId) {
+            // 保存缓存
+            await saveCache(
+              pendingHash,
+              {
+                name: mergedStudentInfo.name || '学生',
+                grade: mergedStudentInfo.grade || '未知年级',
+                subject: mergedStudentInfo.subject || '未知学科',
+                examName: mergedStudentInfo.examName || '考试'
+              },
+              nextExam
+            );
+            
+            // 清除临时数据
+            localStorage.removeItem('pendingCacheHash');
+            localStorage.removeItem('pendingCacheJobId');
+            
+            console.log('✅ 缓存保存成功');
+          }
+        } catch (error) {
+          console.error('保存缓存失败:', error);
+          // 不影响主流程，继续执行
+        }
+        
+        // ✅ 修复历史记录: 更新完整数据（当分析完成时）
+        try {
+          const currentHistoryId = localStorage.getItem('currentHistoryId');
+          if (currentHistoryId) {
+            updateHistory(currentHistoryId, {
+              summary: summaryData,
+              fullData: {
+                typeAnalysis,
+                modules: nextExam.modules,
+                paperAppearance: payload.paperAppearance,
+                practiceQuestions,
+                practicePaper: payload.practicePaper,
+                acceptanceQuiz: payload.acceptanceQuiz,
+                review: payload.review,
+                studyMethods: payload.studyMethods,
+                recognition: payload.recognition,
+                job: nextExam.job
+              }
+            });
+            
+            // 清除临时数据
+            localStorage.removeItem('currentHistoryId');
+            
+            console.log('✅ 历史记录更新成功');
+          }
+        } catch (error) {
+          console.error('更新历史记录失败:', error);
+          // 不影响主流程，继续执行
+        }
+      }
+
       if (onUpdateExam) onUpdateExam(nextExam);
     },
     [buildPracticeQuestions, data, jobId, onUpdateExam, parseProblemTextToKnowledgeItem, studentInfo, summary]
   );
+
+  // ✅ UX优化: 智能确认横幅处理函数
+  const handleConfirmRecognition = useCallback(() => {
+    setShowConfirmBanner(false);
+  }, []);
+
+  const handleCorrectRecognition = useCallback(async (grade: string, subject: string) => {
+    if (!jobId) {
+      showToast('无法重新分析：缺少作业ID');
+      return;
+    }
+
+    setIsReanalyzing(true);
+    try {
+      const response = await fetch(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}/reanalyze`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
+        },
+        body: JSON.stringify({ grade, subject })
+      });
+
+      const result = await response.json();
+      
+      if (!response.ok || !result.success) {
+        throw new Error(result.errorMessage || '重新分析失败');
+      }
+
+      showToast('重新分析已开始，请稍候...');
+      setShowConfirmBanner(false);
+      
+      // 重置作业状态，触发重新轮询
+      setJobStatus('pending');
+      setJobStage('queued');
+      
+    } catch (error: any) {
+      console.error('重新分析失败:', error);
+      showToast(error.message || '重新分析失败，请重试');
+    } finally {
+      setIsReanalyzing(false);
+    }
+  }, [jobId, trialAccessCode]);
+
+  // ✅ UX优化: 处理低置信度确认
+  const handleLowConfidenceConfirm = useCallback(async (
+    action: 'continue' | 'modify' | 'cancel',
+    grade?: string,
+    subject?: string
+  ) => {
+    if (!jobId) {
+      showToast('无法继续：缺少作业ID');
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/analyze-images/jobs/${encodeURIComponent(jobId)}/confirm`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(trialAccessCode ? { 'x-access-code': trialAccessCode } : {}),
+        },
+        body: JSON.stringify({ action, grade, subject })
+      });
+
+      const result = await response.json();
+      
+      if (!response.ok || !result.success) {
+        throw new Error(result.errorMessage || '确认失败');
+      }
+
+      // 关闭对话框
+      setShowLowConfidenceDialog(false);
+      setLowConfidenceData(null);
+
+      if (action === 'continue') {
+        showToast('✅ 继续分析...');
+      } else if (action === 'modify') {
+        showToast('✅ 使用修正后的信息继续分析...');
+      } else if (action === 'cancel') {
+        showToast('已取消分析');
+        setJobStatus('canceled');
+        setJobStage('canceled');
+      }
+      
+    } catch (error: any) {
+      console.error('确认失败:', error);
+      showToast(error.message || '确认失败，请重试');
+    }
+  }, [jobId, trialAccessCode]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -535,15 +882,46 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         if (t === 'progress') {
           const status = jobStatusRef.current || 'running';
           setLoadingState(status, String(payload?.stage || ''), String(payload?.message || ''));
+          // ✅ 质量优化: 更新进度条状态
+          if (payload?.progress !== undefined) {
+            setLoadingProgress(Math.min(100, Math.max(0, Number(payload.progress) || 0)));
+          }
+          if (payload?.estimatedTime !== undefined) {
+            setLoadingEstimatedTime(Math.max(0, Number(payload.estimatedTime) || 0));
+          }
           return;
         }
         if (t === 'partial_result') {
+          // ✅ UX优化: 检查是否需要用户确认（低置信度暂停）
+          if (payload?.result?.data?.pausedForConfirmation) {
+            const recognition = payload.result.data.recognition;
+            if (recognition) {
+              setLowConfidenceData({
+                grade: recognition.grade || '未知',
+                subject: recognition.subject || '未知',
+                confidence: recognition.confidence || 0,
+                confidenceLevel: recognition.confidenceLevel || 'low'
+              });
+              setShowLowConfidenceDialog(true);
+              console.log('⏸️ [Low Confidence] 显示确认对话框');
+            }
+          }
+          
           applyAnalyzeResultToExam(payload?.result, false);
           return;
         }
         if (t === 'result') {
           applyAnalyzeResultToExam(payload?.result);
           setLoadingState('completed', 'completed', '');
+          // ✅ UX优化: 从结果中提取识别信息
+          if (payload?.result?.data?.recognition) {
+            setRecognitionInfo({
+              grade: payload.result.data.recognition.grade,
+              subject: payload.result.data.recognition.subject,
+              confidence: payload.result.data.recognition.confidence,
+              confidenceLevel: payload.result.data.recognition.confidenceLevel,
+            });
+          }
           try {
             es?.close();
           } catch {}
@@ -1212,46 +1590,6 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
     showToast('未找到错题本入口');
   };
 
-  const handleShare = () => {
-    const url = window.location.href;
-    const nav: any = navigator;
-    if (nav.share) {
-      nav
-        .share({
-          title: '试卷分析报告',
-          text: `${studentInfo.name}的${studentInfo.subject}分析报告`,
-          url
-        })
-        .catch(() => {});
-      return;
-    }
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard
-        .writeText(url)
-        .then(() => {
-          showToast('已复制链接，可在微信/QQ 中粘贴发送');
-        })
-        .catch(() => {
-          showToast('复制失败，请手动长按地址栏复制链接');
-        });
-      return;
-    }
-    const textarea = document.createElement('textarea');
-    textarea.value = url;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-    try {
-      document.execCommand('copy');
-      showToast('已复制链接，可在微信/QQ 中粘贴发送');
-    } catch {
-      showToast('当前环境不支持直接分享，请使用截图或导出 PDF');
-    }
-    document.body.removeChild(textarea);
-  };
-
   useEffect(() => {
     if (!isPreviewOpen) return;
     setPreviewPosition({ x: 0, y: 0 });
@@ -1520,6 +1858,34 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         </div>
       )}
 
+      {/* ✅ 质量优化: 低置信度警告横幅 */}
+      {jobStatus === 'completed' && recognitionInfo && showLowConfidenceWarning && (
+        <LowConfidenceWarning
+          level={recognitionInfo.confidenceLevel || 'high'}
+          confidence={recognitionInfo.confidence || 1}
+          grade={recognitionInfo.grade}
+          subject={recognitionInfo.subject}
+          onRetake={onBack}
+          onCorrect={handleCorrectRecognition ? () => {
+            if (recognitionInfo.grade && recognitionInfo.subject) {
+              handleCorrectRecognition(recognitionInfo.grade, recognitionInfo.subject);
+            }
+          } : undefined}
+          onClose={() => setShowLowConfidenceWarning(false)}
+        />
+      )}
+
+      {/* ✅ 调试: 输出状态信息 */}
+      {console.log('[Report Debug]', {
+        jobId,
+        jobStatus,
+        jobStage,
+        loadingProgress,
+        feedbackSubmitted,
+        showProgressBar: jobId && jobStatus !== 'completed' && jobStatus !== 'failed' && jobStatus !== 'canceled',
+        showFeedbackButton: jobStatus === 'completed' && !feedbackSubmitted
+      })}
+
       {jobId && jobStatus !== 'completed' && jobStatus !== 'failed' && jobStatus !== 'canceled' && (
         <div
           style={{
@@ -1528,44 +1894,57 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
             left: 12,
             right: 12,
             zIndex: 200,
-            background: 'rgba(255,255,255,0.92)',
-            border: '1px solid rgba(148,163,184,0.55)',
-            borderRadius: 12,
-            padding: '10px 12px',
-            boxShadow: '0 10px 20px rgba(0,0,0,0.08)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            gap: 12,
-            alignItems: 'center',
           }}
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ fontSize: 13, color: '#0f172a', fontWeight: 600 }}>
-              {jobStage === 'queued'
-                ? '排队中…'
-                : jobStage === 'extracting'
-                  ? '正在提取关键信息…'
-                  : jobStage === 'diagnosing'
-                    ? '正在生成核心结论…'
-                    : jobStage === 'practicing'
-                      ? '正在生成训练与验收…'
-                      : jobStage === 'merging'
-                        ? '正在整合报告…'
-                        : '正在分析中…'}
+          {/* ✅ 质量优化: 使用新的渐进式加载条 */}
+          <ProgressiveLoadingBar
+            currentStage={jobStage || 'extracting'}
+            progress={loadingProgress}
+            estimatedTime={loadingEstimatedTime}
+          />
+          
+          {/* 识别信息显示（如果有） */}
+          {recognitionInfo && (
+            <div style={{
+              background: 'rgba(255,255,255,0.95)',
+              backdropFilter: 'blur(12px)',
+              borderRadius: 12,
+              padding: '12px 16px',
+              marginTop: 12,
+              boxShadow: '0 4px 12px rgba(0,0,0,0.08)',
+            }}>
+              <div style={{ 
+                fontSize: 13, 
+                color: '#475569',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+              }}>
+                <span style={{ fontWeight: 600, color: '#1e293b' }}>
+                  识别结果:
+                </span>
+                <span>
+                  {recognitionInfo.grade} · {recognitionInfo.subject}
+                </span>
+                {recognitionInfo.confidence !== undefined && recognitionInfo.confidenceLevel && (
+                  <ConfidenceBadge
+                    level={recognitionInfo.confidenceLevel}
+                    confidence={recognitionInfo.confidence}
+                    showDetails={false}
+                  />
+                )}
+              </div>
             </div>
-            <div style={{ fontSize: 12, color: '#64748b' }}>
-              {jobMessage ||
-                [
-                  jobImageCount ? `共 ${jobImageCount} 页` : '',
-                  estimateSeconds ? `预计 ${Math.max(30, Math.round(estimateSeconds / 10) * 10)} 秒左右` : '',
-                  isPolling ? '连接不稳定，已切到轮询' : '',
-                ]
-                  .filter(Boolean)
-                  .join(' · ') ||
-                '请保持页面打开，完成后会自动刷新内容'}
-            </div>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          )}
+          
+          {/* 操作按钮 */}
+          <div style={{
+            display: 'flex',
+            gap: 8,
+            marginTop: 12,
+            justifyContent: 'flex-end',
+          }}>
             <button
               className="op-btn-secondary"
               onClick={() => {
@@ -1576,10 +1955,24 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
                   showToast(`jobId：${jobId}`);
                 }
               }}
+              style={{
+                padding: '6px 12px',
+                fontSize: 13,
+                borderRadius: 8,
+              }}
             >
               复制jobId
             </button>
-            <button className="op-btn-secondary" onClick={cancelJob} disabled={canceling}>
+            <button 
+              className="op-btn-secondary" 
+              onClick={cancelJob} 
+              disabled={canceling}
+              style={{
+                padding: '6px 12px',
+                fontSize: 13,
+                borderRadius: 8,
+              }}
+            >
               {canceling ? '取消中…' : '取消'}
             </button>
           </div>
@@ -1595,7 +1988,7 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
             right: 12,
             zIndex: 200,
             background: 'rgba(255,255,255,0.92)',
-            border: '1px solid rgba(239,68,68,0.35)',
+            border: `1px solid ${jobStatus === 'failed' ? 'rgba(239,68,68,0.35)' : 'rgba(148,163,184,0.35)'}`,
             borderRadius: 12,
             padding: '10px 12px',
             boxShadow: '0 10px 20px rgba(0,0,0,0.08)',
@@ -1606,25 +1999,36 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ fontSize: 13, color: '#991b1b', fontWeight: 700 }}>{jobStatus === 'canceled' ? '已取消' : '分析失败'}</div>
-            <div style={{ fontSize: 12, color: '#64748b' }}>{jobMessage || '可尝试重试，或复制 jobId 反馈排查'}</div>
+            <div style={{ 
+              fontSize: 13, 
+              color: jobStatus === 'failed' ? '#dc2626' : '#64748b', 
+              fontWeight: 600 
+            }}>
+              {jobStatus === 'failed' ? '❌ 分析失败' : '⏹️ 已取消'}
+            </div>
+            <div style={{ fontSize: 12, color: '#64748b' }}>
+              {jobMessage || (
+                jobStatus === 'failed' 
+                  ? '可能是网络问题或服务异常，请重试' 
+                  : '您已取消分析，可以重新开始'
+              )}
+            </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              className="op-btn-secondary"
-              onClick={() => {
-                try {
-                  navigator.clipboard?.writeText(jobId);
-                  showToast('已复制 jobId');
-                } catch {
-                  showToast(`jobId：${jobId}`);
-                }
-              }}
+            {jobStatus === 'failed' && (
+              <button 
+                className="op-btn-primary" 
+                onClick={retryJob} 
+                disabled={retrying}
+              >
+                {retrying ? '🔄 重试中…' : '🔄 重试'}
+              </button>
+            )}
+            <button 
+              className="op-btn-secondary" 
+              onClick={onBack}
             >
-              复制jobId
-            </button>
-            <button className="op-btn-primary" onClick={retryJob} disabled={retrying}>
-              {retrying ? '重试中…' : '重试'}
+              返回
             </button>
           </div>
         </div>
@@ -1661,6 +2065,16 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
 
       <div className={`report-content ${showIntro ? 'intro' : ''}`}>
           
+          {/* ✅ UX优化: 智能确认横幅 */}
+          {recognition && showConfirmBanner && jobStatus === 'completed' && (
+            <SmartConfirmBanner
+              recognition={recognition}
+              onConfirm={handleConfirmRecognition}
+              onCorrect={handleCorrectRecognition}
+              onClose={() => setShowConfirmBanner(false)}
+            />
+          )}
+
           {/* Card 1: Overview (Dashboard) */}
           <div className="cmd-card" id="overview-card">
             <div className="cmd-card-header">
@@ -1765,6 +2179,16 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
                         </div>
                       </div>
                     )}
+
+                    {/* 证据来源追溯信息 */}
+                    <EvidenceSourceInfo
+                      problemIndex={i}
+                      evidenceSourceTracking={data?.evidenceSourceTracking}
+                      onViewOriginal={(imageIndex) => {
+                        // TODO: 实现查看原图功能
+                        console.log('查看原图:', imageIndex);
+                      }}
+                    />
                     
                     <div className="ec-actions">
                       <button 
@@ -2156,7 +2580,15 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
         </button>
         <button className="dock-btn" onClick={() => setIsPreviewOpen(true)} title="导出">
           <Download size={20} />
-          <span>导出</span>
+          <span>预览</span>
+        </button>
+        <button className="dock-btn" onClick={handleShare} title="分享">
+          <Share2 size={20} />
+          <span>分享</span>
+        </button>
+        <button className="dock-btn" onClick={handleExportPDF} disabled={isExportingPDF} title="导出PDF">
+          <FileDown size={20} />
+          <span>{isExportingPDF ? `${pdfExportProgress}%` : 'PDF'}</span>
         </button>
       </div>
 
@@ -2305,8 +2737,25 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
               <button className="op-btn-secondary" onClick={() => setIsPreviewOpen(false)} style={{ width: 'auto', padding: '0 18px', height: 36, borderRadius: 999 }}>
                 取消
               </button>
-              <button className="op-btn-primary" onClick={() => window.print()} style={{ width: 'auto', padding: '0 18px', height: 36, borderRadius: 999, marginLeft: 0 }}>
-                <Download size={16} style={{ marginRight: 8 }} /> 打印 / 保存 PDF
+              <button 
+                className="op-btn-secondary" 
+                onClick={handleShare} 
+                style={{ width: 'auto', padding: '0 18px', height: 36, borderRadius: 999, marginLeft: 8 }}
+              >
+                <Share2 size={16} style={{ marginRight: 8 }} /> 
+                分享
+              </button>
+              <button 
+                className="op-btn-secondary" 
+                onClick={handleExportPDF} 
+                disabled={isExportingPDF}
+                style={{ width: 'auto', padding: '0 18px', height: 36, borderRadius: 999, marginLeft: 8 }}
+              >
+                <FileDown size={16} style={{ marginRight: 8 }} /> 
+                {isExportingPDF ? `导出中 ${pdfExportProgress}%` : '导出 PDF'}
+              </button>
+              <button className="op-btn-primary" onClick={() => window.print()} style={{ width: 'auto', padding: '0 18px', height: 36, borderRadius: 999, marginLeft: 8 }}>
+                <Download size={16} style={{ marginRight: 8 }} /> 打印
               </button>
             </div>
           </div>
@@ -2315,6 +2764,34 @@ export const Report: React.FC<ReportProps> = ({ data, onBack, onOpenPractice, on
 
       {/* Print Layout (Hidden on screen normally, but used for actual printing) */}
       <PrintLayout data={data || { studentInfo, summary, modules }} />
+
+      {/* ✅ 质量优化: 用户反馈组件 */}
+      {/* 显示条件：有分析结果且未提交反馈 */}
+      {data && summary && summary.totalScore !== undefined && !feedbackSubmitted && (
+        <FeedbackButton 
+          onClick={() => setIsFeedbackFormOpen(true)}
+          pulse={true}
+        />
+      )}
+      
+      <FeedbackForm
+        isOpen={isFeedbackFormOpen}
+        onClose={() => setIsFeedbackFormOpen(false)}
+        onSubmit={handleFeedbackSubmit}
+        jobId={jobId}
+      />
+
+      {/* ✅ UX优化: 低置信度确认对话框 */}
+      {lowConfidenceData && (
+        <LowConfidenceConfirmDialog
+          isOpen={showLowConfidenceDialog}
+          grade={lowConfidenceData.grade}
+          subject={lowConfidenceData.subject}
+          confidence={lowConfidenceData.confidence}
+          confidenceLevel={lowConfidenceData.confidenceLevel}
+          onConfirm={handleLowConfidenceConfirm}
+        />
+      )}
     </div>
   );
 };

@@ -8,6 +8,17 @@ import crypto from 'crypto';
 import { AnalyzeExamRequest, AnalyzeExamResponse } from './api/interface';
 import { USER_PROMPT_TEMPLATE, getGradeLevelInstruction, getSubjectPracticeInstruction, getSubjectAnalysisInstruction } from './llm/prompts';
 import { llmService } from './llm/service';
+import { sanitizeContent, sanitizeJsonString, validateReadability } from './core/sanitizer';
+// import { validateRelevance, extractPracticeQuestions } from './core/relevance-validator'; // 已禁用：不增加学生负担
+import { extractAndValidateExamInfo, generateValidationReport } from './core/exam-info-extractor';
+import { getKnowledgePointAnalyzer } from './core/knowledge-point-analyzer';
+import { getMultiDimensionInferencer } from './core/multi-dimension-inferencer';
+import { getConfidenceEvaluator } from './core/confidence-evaluator';
+import { getOutputBinder } from './core/output-binder';
+import { getContentConsistencyValidator } from './core/content-consistency-validator';
+import { ProgressiveDeliveryManager } from './core/progressive-delivery';
+import { getQualityAssuranceManager } from './core/quality-assurance';
+import { getDualModelValidator, ExtractedData, ValidatedResult } from './core/dual-model-validator';
 
 
 
@@ -97,14 +108,43 @@ function coerceJsonCandidate(raw: string): string {
 }
 
 function parseLlmJson(rawContent: string): { ok: true; value: any; usedText: string } | { ok: false; error: Error; usedText: string } {
-  const candidate = extractJsonCandidate(rawContent);
+  // 先进行内容清洗
+  const sanitized = sanitizeJsonString(rawContent);
+  
+  // 验证可读性
+  const readability = validateReadability(sanitized);
+  if (!readability.isReadable) {
+    console.warn('⚠️ [Content Sanitizer] 内容仍存在可读性问题:', readability.issues);
+    // 不阻止解析，继续尝试
+  }
+  
+  const candidate = extractJsonCandidate(sanitized);
+  
+  // 第一次尝试：直接解析
   try {
-    return { ok: true, value: JSON.parse(candidate), usedText: candidate };
+    const parsed = JSON.parse(candidate);
+    return { ok: true, value: parsed, usedText: candidate };
   } catch (e: any) {
+    console.warn('⚠️ JSON 解析失败，尝试修复...', {
+      error: e.message,
+      candidateLength: candidate.length,
+      candidatePreview: candidate.substring(0, 200)
+    });
+    
+    // 第二次尝试：强制修复后解析
     try {
       const coerced = coerceJsonCandidate(candidate);
-      return { ok: true, value: JSON.parse(coerced), usedText: coerced };
+      const parsed = JSON.parse(coerced);
+      console.log('✅ JSON 修复成功');
+      return { ok: true, value: parsed, usedText: coerced };
     } catch (e2: any) {
+      console.error('❌ JSON 修复失败:', {
+        originalError: e.message,
+        coerceError: e2.message,
+        sanitizedLength: sanitized.length,
+        candidateLength: candidate.length
+      });
+      
       const err = e2 instanceof Error ? e2 : new Error(String(e2));
       return { ok: false, error: err, usedText: candidate };
     }
@@ -115,7 +155,10 @@ type ImageAnalyzeJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'c
 type ImageAnalyzeJobStage =
   | 'queued'
   | 'extracting'
+  | 'extracted'
+  | 'paused'
   | 'diagnosing'
+  | 'diagnosed'
   | 'practicing'
   | 'merging'
   | 'completed'
@@ -136,8 +179,8 @@ type ImageAnalyzeJobEvent =
         estimateSeconds?: number;
       };
     }
-  | { type: 'progress'; stage: ImageAnalyzeJobStage; message?: string; provider?: string; at: number }
-  | { type: 'partial_result'; result: AnalyzeExamResponse; at: number }
+  | { type: 'progress'; stage: ImageAnalyzeJobStage; message?: string; provider?: string; progress?: number; estimatedSeconds?: number; at: number }
+  | { type: 'partial_result'; stage?: string; result: any; at: number }
   | { type: 'result'; result: AnalyzeExamResponse; at: number }
   | { type: 'error'; stage: 'failed'; errorMessage: string; at: number };
 
@@ -170,6 +213,12 @@ type ImageAnalyzeJobRecord = {
   errorMessage?: string;
   events?: ImageAnalyzeJobBufferedEvent[];
   nextEventId?: number;
+  qualityResults?: any[]; // 图片质量检查结果
+  userConfirmation?: { // ✅ UX优化: 用户确认信息
+    action: 'continue' | 'modify' | 'cancel';
+    grade?: string;
+    subject?: string;
+  };
 };
 
 const imageAnalyzeJobs = new Map<string, ImageAnalyzeJobRecord>();
@@ -201,12 +250,30 @@ function getEventBufferSize(): number {
   return Math.min(200, Math.max(10, Math.floor(v)));
 }
 
-function estimateAnalyzeSeconds(imageCount: number): number {
-  const n = Math.max(0, Math.floor(Number(imageCount) || 0));
-  const base = 55;
-  const per = 45;
-  const secs = base + n * per;
-  return Math.max(45, Math.min(360, secs));
+function estimateAnalyzeSeconds(imageCount: number, provider?: string, hasOcrText?: boolean): number {
+  // 使用智能时长估算器
+  try {
+    const { getTimeEstimator } = require('./core/time-estimator');
+    const estimator = getTimeEstimator();
+    
+    const factors = {
+      imageCount,
+      provider: provider || 'doubao',
+      hasOcrText: hasOcrText || false
+    };
+    
+    const { estimatedSeconds } = estimator.estimateAnalysisTime(factors);
+    return estimatedSeconds;
+  } catch (error) {
+    console.warn('⚠️ [Time Estimator] 智能估算失败，使用基础估算:', error);
+    
+    // 回退到基础估算
+    const n = Math.max(0, Math.floor(Number(imageCount) || 0));
+    const base = 55;
+    const per = 45;
+    const secs = base + n * per;
+    return Math.max(45, Math.min(360, secs));
+  }
 }
 
 type ImageAnalyzeResultCacheRecord = {
@@ -469,6 +536,41 @@ function validateExtractJson(value: any): { ok: true } | { ok: false; reason: st
   if (!observations || typeof observations !== 'object') return { ok: false, reason: '缺少 observations' };
   const problems = (observations as any).problems;
   if (!Array.isArray(problems)) return { ok: false, reason: 'observations.problems 缺失' };
+  
+  // 验证每个 problem 的证据完整性
+  for (let i = 0; i < problems.length; i++) {
+    const problem = problems[i];
+    if (typeof problem !== 'string') continue;
+    
+    // 检查必需的标签
+    const hasKnowledge = problem.includes('【知识点】');
+    const hasQuestionNo = problem.includes('【题号】');
+    const hasScore = problem.includes('【得分】');
+    const hasEvidence = problem.includes('【证据】');
+    const hasConfidence = problem.includes('【置信度】');
+    
+    if (!hasKnowledge || !hasQuestionNo || !hasScore || !hasEvidence || !hasConfidence) {
+      console.warn(`⚠️ [Evidence Validation] Problem ${i} 缺少必需字段:`, {
+        hasKnowledge,
+        hasQuestionNo,
+        hasScore,
+        hasEvidence,
+        hasConfidence,
+        problem: problem.substring(0, 100)
+      });
+      // 不阻止，但记录警告
+    }
+    
+    // 验证得分格式 (X/Y)
+    const scoreMatch = problem.match(/【得分】([^【]+)/);
+    if (scoreMatch) {
+      const scoreStr = scoreMatch[1].trim();
+      if (!/\d+\/\d+/.test(scoreStr)) {
+        console.warn(`⚠️ [Evidence Validation] Problem ${i} 得分格式不正确:`, scoreStr);
+      }
+    }
+  }
+  
   return { ok: true };
 }
 
@@ -839,6 +941,126 @@ async function analyzeExtractWithHedge(
   });
 }
 
+/**
+ * 双模型验证版本的提取函数
+ * 同时调用两个模型，使用DualModelValidator验证和合并结果
+ */
+async function analyzeExtractWithDualModel(
+  req: ImageAnalyzeJobRequest,
+  prompt: string,
+  primaryProvider: 'doubao' | 'aliyun' | 'zhipu',
+  emit: (ev: ImageAnalyzeJobEvent) => void
+): Promise<{ 
+  extracted: any; 
+  usedProvider: 'doubao' | 'aliyun' | 'zhipu';
+  validationResult?: ValidatedResult;
+  isDualModelValidated: boolean;
+}> {
+  // 检查是否启用双模型验证
+  const dualModelEnabled = String(process.env.DUAL_MODEL_VALIDATION_ENABLED || '0').trim() === '1';
+  
+  if (!dualModelEnabled) {
+    // 未启用双模型验证，使用原有的hedge模式
+    const result = await analyzeExtractWithHedge(req, prompt, primaryProvider, emit);
+    return { ...result, isDualModelValidated: false };
+  }
+  
+  // 确定辅助模型
+  const envSecondary = String(process.env.DUAL_MODEL_SECONDARY_PROVIDER || '').trim();
+  const secondaryProvider = (envSecondary as any) || pickSecondaryProvider(primaryProvider);
+  
+  const primaryCfg = llmService.getProviderConfig(primaryProvider);
+  const secondaryCfg = llmService.getProviderConfig(secondaryProvider);
+  const canPrimary = !!primaryCfg?.apiKey;
+  const canSecondary = !!secondaryCfg?.apiKey && secondaryProvider !== primaryProvider;
+  
+  if (!canPrimary || !canSecondary) {
+    console.warn('⚠️ [Dual Model] 双模型验证需要配置两个不同的模型，回退到单模型模式');
+    const result = await analyzeExtractWithHedge(req, prompt, primaryProvider, emit);
+    return { ...result, isDualModelValidated: false };
+  }
+  
+  console.log(`🔄 [Dual Model] 启动双模型验证: ${primaryProvider} + ${secondaryProvider}`);
+  emit({ 
+    type: 'progress', 
+    stage: 'extracting', 
+    message: `双模型验证中 (${primaryProvider} + ${secondaryProvider})`, 
+    at: Date.now() 
+  });
+  
+  try {
+    // 并行调用两个模型
+    const [primaryResult, secondaryResult] = await Promise.all([
+      analyzeExtractWithProvider(req, prompt, primaryProvider, emit),
+      analyzeExtractWithProvider(req, prompt, secondaryProvider, emit)
+    ]);
+    
+    console.log('✅ [Dual Model] 两个模型都已返回结果，开始验证...');
+    
+    // 使用DualModelValidator验证和合并结果
+    const validator = getDualModelValidator();
+    const validationResult = validator.validate(
+      primaryResult as ExtractedData,
+      secondaryResult as ExtractedData,
+      primaryProvider,
+      secondaryProvider
+    );
+    
+    // 记录验证结果
+    console.log(`✅ [Dual Model] 验证完成:`);
+    console.log(`   - 考试名称: ${validationResult.validationStatus.examName}`);
+    console.log(`   - 科目: ${validationResult.validationStatus.subject}`);
+    console.log(`   - 得分: ${validationResult.validationStatus.score}`);
+    console.log(`   - 满分: ${validationResult.validationStatus.fullScore}`);
+    console.log(`   - 问题列表: ${validationResult.validationStatus.problems}`);
+    console.log(`   - 不一致项: ${validationResult.validationDetails.inconsistencies.length}`);
+    console.log(`   - 需要用户确认: ${validationResult.validationDetails.needsUserConfirmation}`);
+    
+    if (validationResult.validationDetails.inconsistencies.length > 0) {
+      console.warn('⚠️ [Dual Model] 发现不一致项:');
+      validationResult.validationDetails.inconsistencies.forEach(inc => {
+        console.warn(`   - ${inc.field}: ${inc.reason}`);
+      });
+    }
+    
+    // 构造合并后的结果（使用验证后的数据）
+    const mergedResult = {
+      meta: {
+        ...primaryResult.meta,
+        examName: validationResult.examName,
+        subject: validationResult.subject,
+        score: validationResult.score,
+        fullScore: validationResult.fullScore
+      },
+      observations: {
+        ...primaryResult.observations,
+        problems: validationResult.problems.map(p => 
+          `【知识点】${p.knowledge}【题号】${p.questionNo}【得分】${p.score}【错因】${p.errorType}【证据】${p.evidence}【置信度】${p.confidence}`
+        )
+      },
+      // 保留其他字段
+      ...Object.keys(primaryResult).reduce((acc, key) => {
+        if (key !== 'meta' && key !== 'observations') {
+          acc[key] = primaryResult[key];
+        }
+        return acc;
+      }, {} as any)
+    };
+    
+    return {
+      extracted: mergedResult,
+      usedProvider: primaryProvider,
+      validationResult,
+      isDualModelValidated: true
+    };
+    
+  } catch (error) {
+    console.error('❌ [Dual Model] 双模型验证失败，回退到单模型模式:', error);
+    const result = await analyzeExtractWithHedge(req, prompt, primaryProvider, emit);
+    return { ...result, isDualModelValidated: false };
+  }
+}
+
 async function analyzeImagesWithProvider(
   req: ImageAnalyzeJobRequest,
   visionPrompt: string,
@@ -1079,6 +1301,23 @@ async function runImageAnalyzeJob(jobId: string) {
   job.errorMessage = undefined;
   setSnapshot('extracting');
 
+  // 初始化渐进式交付管理器
+  const progressiveDelivery = new ProgressiveDeliveryManager({
+    imageCount: job.imageCount || 1,
+    enableProgressiveDelivery: true
+  });
+  
+  // 发送初始进度更新
+  const initialProgress = progressiveDelivery.createProgressUpdate('extracting');
+  emit({
+    type: 'progress',
+    stage: 'extracting',
+    progress: initialProgress.progress,
+    estimatedSeconds: initialProgress.estimatedRemainingSeconds,
+    message: initialProgress.message,
+    at: Date.now()
+  });
+
   const { subject, grade } = job.request;
   const ocrText = pickOcrText(job.request);
   const extractPrompt = `
@@ -1153,47 +1392,202 @@ ${grade ? `【重要提示】学生年级为：${grade}，请参考此学段的�
     const providers = resolveStageProviders(job.request);
     const extractedPack = ocrText
       ? await analyzeExtractTextWithHedge(ocrText, extractTextPrompt, providers.extract, emit)
-      : await analyzeExtractWithHedge(job.request, extractPrompt, providers.extract, emit);
+      : await analyzeExtractWithDualModel(job.request, extractPrompt, providers.extract, emit);
     const extracted = extractedPack.extracted;
+    
+    // 记录双模型验证结果（仅当使用图片识别且启用了双模型验证时）
+    if (!ocrText && 'isDualModelValidated' in extractedPack) {
+      const dualModelPack = extractedPack as { 
+        extracted: any; 
+        usedProvider: 'doubao' | 'aliyun' | 'zhipu';
+        validationResult?: ValidatedResult;
+        isDualModelValidated: boolean;
+      };
+      
+      if (dualModelPack.isDualModelValidated && dualModelPack.validationResult) {
+        console.log('✅ [Dual Model] 使用了双模型验证结果');
+        // 可以将验证结果添加到job记录中，供前端展示
+        if (!job.result) {
+          job.result = {} as any;
+        }
+        (job.result as any).dualModelValidation = {
+          enabled: true,
+          primaryProvider: dualModelPack.validationResult.validationDetails.primaryProvider,
+          secondaryProvider: dualModelPack.validationResult.validationDetails.secondaryProvider,
+          validationStatus: dualModelPack.validationResult.validationStatus,
+          inconsistencies: dualModelPack.validationResult.validationDetails.inconsistencies,
+          needsUserConfirmation: dualModelPack.validationResult.validationDetails.needsUserConfirmation
+        };
+      }
+    }
+    
     if (isCanceled()) {
       return;
     }
 
     const extractedMeta = extracted?.meta || {};
     const extractedProblems = extracted?.observations?.problems || [];
-    const effectiveSubject = String(extractedMeta?.subject || subject || '').trim();
+    
+    // 发送识别完成的进度更新和部分结果
+    const extractedProgress = progressiveDelivery.createProgressUpdate(
+      'extracted',
+      progressiveDelivery.createExtractedPartialResult(extracted)
+    );
+    emit({
+      type: 'progress',
+      stage: 'extracted',
+      progress: extractedProgress.progress,
+      estimatedSeconds: extractedProgress.estimatedRemainingSeconds,
+      message: extractedProgress.message,
+      at: Date.now()
+    });
+    emit({
+      type: 'partial_result',
+      stage: 'extracted',
+      result: extractedProgress.partialResult,
+      at: Date.now()
+    });
+    
+    // ========== 基于内容的智能推断系统 ==========
+    console.log('🚀 [Content-Driven Analysis] 开始基于试卷内容的智能推断...');
+    
+    // 1. 知识点分析
+    const analyzer = getKnowledgePointAnalyzer();
+    const knowledgePoints = analyzer.analyzeKnowledgePoints(extractedProblems);
+    console.log(`✅ [Knowledge Point Analyzer] 提取了 ${knowledgePoints.length} 个知识点`);
+    
+    // 2. 多维度推断
+    const inferencer = getMultiDimensionInferencer();
+    const titleResult = inferencer.inferFromTitle(extractedMeta.examName || '');
+    const knowledgeResult = inferencer.inferFromKnowledgePoints(knowledgePoints);
+    const difficultyResult = inferencer.inferFromDifficulty(extractedProblems);
+    const questionTypeResult = inferencer.inferFromQuestionTypes(extractedMeta.typeAnalysis || []);
+    
+    const inference = inferencer.combineResults([
+      titleResult,
+      knowledgeResult,
+      difficultyResult,
+      questionTypeResult
+    ]);
+    
+    console.log(`✅ [Multi-Dimension Inferencer] 综合推断: 年级=${inference.finalGrade}, 学科=${inference.finalSubject}, 置信度=${(inference.overallConfidence * 100).toFixed(0)}%`);
+    
+    // 3. 置信度评估
+    const evaluator = getConfidenceEvaluator();
+    const confidence = evaluator.evaluate(inference);
+    console.log(`✅ [Confidence Evaluator] 置信度评估: ${confidence.level} (${(confidence.score * 100).toFixed(0)}%)`);
+    console.log(`   因素: 标题清晰度=${(confidence.factors.titleClarity * 100).toFixed(0)}%, 知识点一致性=${(confidence.factors.knowledgeConsistency * 100).toFixed(0)}%, 难度对齐=${(confidence.factors.difficultyAlignment * 100).toFixed(0)}%, 维度一致性=${(confidence.factors.dimensionAgreement * 100).toFixed(0)}%`);
+    
+    // ✅ UX优化: 低置信度暂停 - 如果置信度<0.7，暂停分析等待用户确认
+    if (confidence.score < 0.7) {
+      console.warn(`⚠️ [Low Confidence Pause] 置信度过低 (${(confidence.score * 100).toFixed(0)}%)，暂停分析等待用户确认`);
+      
+      // 发送partial_result事件，包含pausedForConfirmation标志
+      emit({
+        type: 'partial_result',
+        stage: 'extracted',
+        result: {
+          success: true,
+          data: {
+            recognition: {
+              grade: inference.finalGrade,
+              subject: inference.finalSubject,
+              confidence: confidence.score,
+              confidenceLevel: confidence.level,
+            },
+            pausedForConfirmation: true,
+            message: '识别置信度较低，建议人工确认后继续分析'
+          }
+        },
+        at: Date.now()
+      });
+      
+      // 更新作业状态为paused
+      setSnapshot('paused');
+      
+      // 等待用户确认（通过轮询检查作业状态）
+      console.log(`⏸️ [Low Confidence Pause] 作业已暂停，等待用户确认...`);
+      
+      // 设置超时（30分钟）
+      const pauseTimeout = 30 * 60 * 1000;
+      const pauseStartTime = Date.now();
+      
+      while (true) {
+        if (isCanceled()) {
+          console.log(`❌ [Low Confidence Pause] 作业已取消`);
+          return;
+        }
+        
+        // 检查是否超时
+        if (Date.now() - pauseStartTime > pauseTimeout) {
+          console.warn(`⏱️ [Low Confidence Pause] 等待超时，自动取消作业`);
+          setSnapshot('canceled');
+          throw new Error('等待用户确认超时（30分钟）');
+        }
+        
+        // 检查作业状态
+        const currentJob = imageAnalyzeJobs.get(jobId);
+        if (!currentJob) {
+          console.warn(`⚠️ [Low Confidence Pause] 作业不存在`);
+          return;
+        }
+        
+        // 如果用户已确认，继续分析
+        if (currentJob.userConfirmation) {
+          console.log(`✅ [Low Confidence Pause] 用户已确认，继续分析`);
+          
+          // 如果用户修正了识别结果，使用修正后的值
+          if (currentJob.userConfirmation.action === 'modify') {
+            inference.finalGrade = currentJob.userConfirmation.grade || inference.finalGrade;
+            inference.finalSubject = currentJob.userConfirmation.subject || inference.finalSubject;
+            console.log(`✅ [Low Confidence Pause] 使用修正后的识别结果: 年级=${inference.finalGrade}, 学科=${inference.finalSubject}`);
+          } else if (currentJob.userConfirmation.action === 'cancel') {
+            console.log(`❌ [Low Confidence Pause] 用户取消分析`);
+            setSnapshot('canceled');
+            return;
+          }
+          
+          // 清除确认标志，继续分析
+          delete currentJob.userConfirmation;
+          break;
+        }
+        
+        // 等待1秒后再检查
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    
+    // 4. 创建绑定上下文（强制使用识别结果，忽略用户输入）
+    const binder = getOutputBinder();
+    const boundContext = binder.createBoundContext(
+      inference,
+      confidence,
+      knowledgePoints,
+      { grade, subject }  // 用户输入仅记录，不使用
+    );
+    
+    console.log(`✅ [Output Binder] 创建绑定上下文: 年级=${boundContext.grade}, 学科=${boundContext.subject}, 来源=${boundContext.source}`);
+    
+    // 打印警告信息
+    if (boundContext.warnings.length > 0) {
+      boundContext.warnings.forEach(warning => console.warn(warning));
+    }
+    
+    // 使用绑定上下文中的信息（完全基于识别结果）
+    const effectiveGrade = boundContext.grade;
+    const effectiveSubject = boundContext.subject;
+    const effectiveExamName = extractedMeta.examName;
+    // ========================================
 
     // Parallel Execution: Diagnosis & Practice
     setSnapshot('diagnosing'); 
 
-    const diagnosisPrompt = `
-你是一位经验丰富的特级教师。基于下面“试卷信息提取结果”，生成面向学生与家长的核心结论与行动建议。
-
-要求：
-- 不要编造题号或得分；如果信息不足，保持谨慎并提示补拍/老师确认。
-- 语言温暖积极、可执行。
-- 输出严格 JSON（不要包含 Markdown 代码块）。
-
-【已提取信息】：
-${JSON.stringify(extracted, null, 2)}
-
-输出结构：
-{
-  "review": { "required": false, "reason": "", "suggestions": [] },
-  "forStudent": {
-    "overall": "整体评价（3-6句）",
-    "advice": ["【基础巩固】...", "【专项训练】...", "【习惯养成】..."]
-  },
-  "studyMethods": {
-    "methods": ["更高效的做法（4-6条）"],
-    "weekPlan": ["接下来7天微计划（5-7条）"]
-  },
-  "forParent": {
-    "summary": "家长可读总结（2-4句）",
-    "guidance": "家长督学建议（3-5句）"
-  }
-}
-`.trim();
+    const diagnosisPrompt = binder.generateDiagnosisPrompt(
+      boundContext,
+      extracted,
+      getGradeLevelInstruction,
+      getSubjectAnalysisInstruction
+    );
 
     const diagnosisTask = generateTextJsonWithRepair(
       diagnosisPrompt,
@@ -1204,34 +1598,11 @@ ${JSON.stringify(extracted, null, 2)}
       `- review (object)\n- forStudent.overall (string)\n- forStudent.advice (string[])\n- studyMethods.methods (string[])\n- studyMethods.weekPlan (string[])\n- forParent (object)`
     );
 
-    const practicePrompt = `
-请基于下面信息，为学生生成一份“针对性巩固练习卷”和“验收小测”。
-
-要求：
-- 题目必须可直接作答（完整题干/数值/设问），不要只写概括。
-- 每道题提供 hints（三层：审题提示、思路提示、关键一步起始），不出现最终答案。
-- 输出严格 JSON（不要包含 Markdown 代码块）。
-
-【试卷信息提取】：
-${JSON.stringify(extracted, null, 2)}
-
-${effectiveSubject ? getSubjectPracticeInstruction(effectiveSubject) : ''}
-
-输出结构：
-{
-  "practicePaper": {
-    "title": "针对性巩固练习卷",
-    "sections": [
-      { "name": "一、...", "questions": [ { "no": 1, "content": "...", "hints": ["..."] } ] }
-    ]
-  },
-  "acceptanceQuiz": {
-    "title": "验收小测",
-    "passRule": "3题全对",
-    "questions": [ { "no": 1, "content": "...", "hints": ["..."] } ]
-  }
-}
-`.trim();
+    const practicePrompt = binder.generatePracticePrompt(
+      boundContext,
+      extracted,
+      getSubjectPracticeInstruction
+    );
 
     const practiceTask = generateTextJsonWithRepair(
       practicePrompt,
@@ -1244,59 +1615,224 @@ ${effectiveSubject ? getSubjectPracticeInstruction(effectiveSubject) : ''}
 
     const [diagnosis, practice] = await Promise.all([diagnosisTask, practiceTask]);
 
+    // 发送核心分析完成的进度更新和部分结果（Top3错因）
+    const diagnosedProgress = progressiveDelivery.createProgressUpdate(
+      'diagnosed',
+      progressiveDelivery.createDiagnosedPartialResult(extracted, diagnosis)
+    );
+    emit({
+      type: 'progress',
+      stage: 'diagnosed',
+      progress: diagnosedProgress.progress,
+      estimatedSeconds: diagnosedProgress.estimatedRemainingSeconds,
+      message: diagnosedProgress.message,
+      at: Date.now()
+    });
+    emit({
+      type: 'partial_result',
+      stage: 'diagnosed',
+      result: diagnosedProgress.partialResult,
+      at: Date.now()
+    });
+
+    // 验证内容一致性
+    if (isCanceled()) return;
+
+    try {
+      const validator = getContentConsistencyValidator();
+      
+      // 验证诊断报告
+      const diagnosisReport = validator.validateDiagnosisReport(diagnosis, inference, knowledgePoints);
+      if (!diagnosisReport.overallPassed) {
+        console.warn('⚠️ [Content Consistency] 诊断报告一致性验证有警告');
+        diagnosisReport.warnings.forEach(w => console.warn(`   ${w}`));
+      }
+      
+      // 验证练习题
+      const practiceReport = validator.validatePracticeQuestions(practice, inference, knowledgePoints);
+      if (!practiceReport.overallPassed) {
+        console.warn('⚠️ [Content Consistency] 练习题一致性验证有警告');
+        practiceReport.warnings.forEach(w => console.warn(`   ${w}`));
+      }
+      
+      // 验证学习方法
+      const methodsReport = validator.validateStudyMethods(diagnosis.studyMethods, inference);
+      if (!methodsReport.overallPassed) {
+        console.warn('⚠️ [Content Consistency] 学习方法一致性验证有警告');
+        methodsReport.warnings.forEach(w => console.warn(`   ${w}`));
+      }
+    } catch (err) {
+      console.error('⚠️ [Content Consistency] 验证失败:', err);
+      // 不阻止流程，继续执行
+    }
+
+    // ========== 练习题相关性验证已禁用 ==========
+    // 原因：不应增加学生负担，专注于核心价值（有效练习和快速分析）
+    // 用户决策：分析时长已经169秒，不应再增加额外验证时间
+    // 如需重新启用，取消下方注释并恢复 import 语句
+    /*
+    if (isCanceled()) return;
+    
+    try {
+      const practiceQuestions = extractPracticeQuestions(practice.practicePaper);
+      if (practiceQuestions.length > 0 && extractedProblems.length > 0) {
+        const relevanceResult = validateRelevance(extractedProblems, practiceQuestions);
+        
+        console.log(`✅ [Relevance Validator] 整体相关性: ${(relevanceResult.overall * 100).toFixed(0)}%`);
+        console.log(`✅ [Relevance Validator] ${relevanceResult.questions.filter(q => q.isRelevant).length}/${relevanceResult.questions.length} 题目相关`);
+        
+        if (relevanceResult.needsRegeneration) {
+          console.warn('⚠️ [Relevance Validator] 练习题相关性不足，建议重新生成');
+          console.warn(`⚠️ [Relevance Validator] 相关性得分: ${(relevanceResult.overall * 100).toFixed(0)}%`);
+          
+          // 记录不相关的题目
+          relevanceResult.questions.forEach(q => {
+            if (!q.isRelevant) {
+              console.warn(`⚠️ [Relevance Validator] 题目 ${q.questionNo} 不相关 (得分: ${(q.relevanceScore * 100).toFixed(0)}%): ${q.reason}`);
+            }
+          });
+        }
+        
+        // 将相关性结果添加到响应中（可选）
+        if (practice.practicePaper) {
+          practice.practicePaper.relevanceValidation = relevanceResult;
+        }
+      }
+    } catch (err) {
+      console.error('⚠️ [Relevance Validator] 验证失败:', err);
+      // 不阻止流程，继续执行
+    }
+    */
+
+    // 使用 OutputBinder 构建响应
     const buildResponse = (opts: { practice?: any; diagnosis?: any } = {}): AnalyzeExamResponse => {
-      const meta = { ...(extractedMeta || {}) };
-      if (!String((meta as any)?.subject || '').trim() && effectiveSubject) (meta as any).subject = effectiveSubject;
       const diag = opts.diagnosis || {};
       const prac = opts.practice || {};
       
-      const reportJson = {
-        meta,
-        review: diag.review,
-        forStudent: {
-          ...(diag.forStudent || {}),
-          problems: Array.isArray(extractedProblems) ? extractedProblems : [],
-        },
-        studyMethods: diag.studyMethods,
-        forParent: diag.forParent,
-        practicePaper: prac.practicePaper,
-        acceptanceQuiz: prac.acceptanceQuiz,
-      };
-      return {
-        success: true,
-        data: {
-          summary: {
-            totalScore: meta.score || 0,
-            rank: 0,
-            beatPercentage: 0,
-            strongestKnowledge: '基于图像分析',
-            weakestKnowledge: '基于图像分析',
-          },
-          report: {
-            forStudent: reportJson.forStudent || {},
-            forParent: reportJson.forParent || {},
-          },
-          studyMethods: reportJson.studyMethods,
-          examName: meta.examName,
-          typeAnalysis: meta.typeAnalysis || [],
-          paperAppearance: meta.paperAppearance,
-          subject: meta.subject,
-          review: reportJson.review,
-          rawLlmOutput: JSON.stringify(reportJson),
-          practiceQuestions: [],
-          practicePaper: reportJson.practicePaper,
-          acceptanceQuiz: reportJson.acceptanceQuiz,
-        },
-      };
+      return binder.buildResponse(
+        boundContext,
+        extractedMeta,
+        extractedProblems,
+        diag,
+        prac
+      );
     };
 
     setSnapshot('merging');
     const response = buildResponse({ practice, diagnosis });
 
+    // 质量保证检查
+    const qaManager = getQualityAssuranceManager();
+    const qualityReport = qaManager.generateQualityReport(response, extracted);
+    
+    console.log(`✅ [Quality Assurance] 质量评分: ${qualityReport.metrics.overallScore}/100`);
+    console.log(`   - 识别置信度: ${(qualityReport.metrics.recognitionConfidence * 100).toFixed(0)}%`);
+    console.log(`   - 分析置信度: ${(qualityReport.metrics.analysisConfidence * 100).toFixed(0)}%`);
+    console.log(`   - 证据完整性: ${(qualityReport.metrics.evidenceCompleteness * 100).toFixed(0)}%`);
+    console.log(`   - 内容可读性: ${(qualityReport.metrics.contentReadability * 100).toFixed(0)}%`);
+    
+    // 生成低置信度警告
+    const { getLowConfidenceWarningManager } = await import('./core/low-confidence-warning');
+    const warningManager = getLowConfidenceWarningManager();
+    const lowConfidenceProblems = warningManager.extractLowConfidenceProblems(extracted);
+    const lowConfidenceWarning = warningManager.generateWarning({
+      overallConfidence: qualityReport.metrics.overallScore / 100,
+      recognitionConfidence: qualityReport.metrics.recognitionConfidence,
+      analysisConfidence: qualityReport.metrics.analysisConfidence,
+      evidenceCompleteness: qualityReport.metrics.evidenceCompleteness,
+      lowConfidenceProblems
+    });
+    
+    if (lowConfidenceWarning.hasWarning) {
+      console.warn(`⚠️ [Low Confidence Warning] ${lowConfidenceWarning.message}`);
+      console.warn(`   级别: ${lowConfidenceWarning.level}`);
+      console.warn(`   受影响项: ${lowConfidenceWarning.affectedItems.join(', ')}`);
+    }
+    
+    if (!qualityReport.completeness.passed) {
+      console.warn('⚠️ [Quality Assurance] 完整性验证未通过');
+      if (qualityReport.completeness.missingFields.length > 0) {
+        console.warn(`   缺少字段: ${qualityReport.completeness.missingFields.join(', ')}`);
+      }
+      if (qualityReport.completeness.invalidFields.length > 0) {
+        qualityReport.completeness.invalidFields.forEach(({ field, reason }) => {
+          console.warn(`   无效字段 ${field}: ${reason}`);
+        });
+      }
+    }
+    
+    if (qualityReport.completeness.warnings.length > 0) {
+      console.warn('⚠️ [Quality Assurance] 质量警告:');
+      qualityReport.completeness.warnings.forEach(w => console.warn(`   ${w}`));
+    }
+    
+    if (qualityReport.recommendations.length > 0) {
+      console.warn('💡 [Quality Assurance] 改进建议:');
+      qualityReport.recommendations.forEach(r => console.warn(`   ${r}`));
+    }
+    
+    // 将质量指标添加到响应中（作为扩展字段）
+    (response as any).qualityMetrics = qualityReport.metrics;
+    
+    // 将低置信度警告添加到响应中
+    if (lowConfidenceWarning.hasWarning && response.data) {
+      response.data.lowConfidenceWarning = lowConfidenceWarning;
+    }
+    
+    // 添加证据来源追溯
+    const { getEvidenceSourceTracker } = await import('./core/evidence-source-tracker');
+    const sourceTracker = getEvidenceSourceTracker();
+    sourceTracker.addSourceTracking(response, job.imageCount, 'batch');
+    
+    // 添加性能统计
+    const perfStats = progressiveDelivery.getPerformanceStats();
+    console.log(`⏱️ [Performance] 总耗时: ${perfStats.totalSeconds.toFixed(1)}秒`);
+    perfStats.stageTimings.forEach(({ stage, seconds }) => {
+      console.log(`   ${stage}: ${seconds.toFixed(1)}秒`);
+    });
+
+    // ✅ UX优化: 添加识别信息到响应中
+    if (response.data && inference && confidence) {
+      const overallConfidence = inference.overallConfidence;
+      const confidenceLevel = 
+        overallConfidence >= 0.7 ? 'high' :
+        overallConfidence >= 0.5 ? 'medium' : 'low';
+      
+      response.data.recognition = {
+        grade: inference.finalGrade,
+        subject: inference.finalSubject,
+        gradeConfidence: inference.gradeConfidence || overallConfidence,
+        subjectConfidence: inference.subjectConfidence || overallConfidence,
+        overallConfidence: overallConfidence,
+        confidenceLevel: confidenceLevel,
+        needsConfirmation: overallConfidence < 0.7,
+        source: boundContext.source || 'multi-dimension'
+      };
+      
+      console.log(`✅ [Recognition Info] 添加识别信息: ${inference.finalGrade} ${inference.finalSubject} (置信度: ${(overallConfidence * 100).toFixed(0)}%, 级别: ${confidenceLevel})`);
+    }
+
     job.result = response;
     job.partialResult = undefined;
     job.status = 'completed';
     setSnapshot('completed');
+
+    // 记录分析耗时到智能估算器
+    try {
+      const { getTimeEstimator } = await import('./core/time-estimator');
+      const estimator = getTimeEstimator();
+      const actualDuration = Math.round((Date.now() - job.createdAt) / 1000);
+      const provider = resolveStageProviders(job.request).extract;
+      
+      estimator.recordAnalysis(
+        job.imageCount,
+        actualDuration,
+        provider,
+        true // 成功完成
+      );
+    } catch (error) {
+      console.warn('⚠️ [Time Estimator] 记录耗时失败:', error);
+    }
 
     if (job.cacheKey) {
       try {
@@ -1306,12 +1842,56 @@ ${effectiveSubject ? getSubjectPracticeInstruction(effectiveSubject) : ''}
     emit({ type: 'result', result: response, at: Date.now() });
   } catch (e: any) {
     const msg = String(e?.message || e || '未知错误');
+    
+    // 详细的错误日志
+    console.error('❌ [Job Failed] 任务执行失败:', {
+      jobId,
+      stage: job.stage,
+      imageCount: job.imageCount,
+      error: msg,
+      stack: e?.stack
+    });
+    
+    // 如果是 JSON 解析错误，记录更多信息
+    if (msg.includes('JSON') || msg.includes('parse') || msg.includes('解析')) {
+      console.error('📋 [JSON Parse Error] JSON 解析失败详情:', {
+        errorMessage: msg,
+        errorType: e?.constructor?.name,
+        possibleCause: 'LLM 输出可能包含未清洗的特殊字符或格式错误'
+      });
+    }
+    
+    // 如果是 LaTeX 相关错误
+    if (msg.includes('LaTeX') || msg.includes('公式') || msg.includes('$')) {
+      console.error('📐 [LaTeX Error] LaTeX 公式处理失败:', {
+        errorMessage: msg,
+        suggestion: '检查 sanitizer.ts 中的 LaTeX 转换逻辑'
+      });
+    }
+    
     if (!isCanceled()) {
       job.status = 'failed';
       job.stage = 'failed';
       job.errorMessage = msg;
       job.partialResult = undefined;
       job.updatedAt = Date.now();
+
+      // 记录失败的分析到智能估算器
+      try {
+        const { getTimeEstimator } = await import('./core/time-estimator');
+        const estimator = getTimeEstimator();
+        const actualDuration = Math.round((Date.now() - job.createdAt) / 1000);
+        const provider = resolveStageProviders(job.request).extract;
+        
+        estimator.recordAnalysis(
+          job.imageCount,
+          actualDuration,
+          provider,
+          false // 失败
+        );
+      } catch (error) {
+        console.warn('⚠️ [Time Estimator] 记录失败耗时失败:', error);
+      }
       broadcastSse(jobId, {
         type: 'snapshot',
         job: {
@@ -1482,6 +2062,16 @@ app.use((req, res, next) => {
 // 1.5 根路径健康检查
 app.get('/healthz', (req, res) => {
   res.status(200).json({ ok: true, version: 'V3' });
+});
+
+// 健康检查端点（用于测试和监控）
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    version: 'V3',
+    uptime: process.uptime()
+  });
 });
 
 app.get('/', (req, res, next) => {
@@ -1689,15 +2279,61 @@ app.post('/api/analyze-exam', async (req, res) => {
       }
     };
 
+    // 验证证据完整性
+    const { getEvidenceValidator } = await import('./core/evidence-validator');
+    const evidenceValidator = getEvidenceValidator();
+    const problems = response.data?.report.forStudent.problems || [];
+    const validationSummary = evidenceValidator.validateProblems(problems);
+    
+    console.log(`📋 [Evidence Validation] 证据完整性: ${validationSummary.completenessRate.toFixed(1)}% (${validationSummary.validProblems}/${validationSummary.totalProblems})`);
+    
+    if (validationSummary.invalidProblems > 0) {
+      console.log(`⚠️ [Evidence Validation] 发现 ${validationSummary.invalidProblems} 个不完整的问题`);
+      validationSummary.issues.forEach((issue, index) => {
+        console.log(`   问题 ${index + 1}: 缺失字段=${issue.missingFields.join(',') || '无'}, 无效字段=${issue.invalidFields.join(',') || '无'}`);
+      });
+    }
+
+    // 生成低置信度警告
+    const { getLowConfidenceWarningManager } = await import('./core/low-confidence-warning');
+    const warningManager = getLowConfidenceWarningManager();
+    const lowConfidenceProblems = warningManager.extractLowConfidenceProblems({ observations: { problems } });
+    const lowConfidenceWarning = warningManager.generateWarning({
+      overallConfidence: validationSummary.completenessRate / 100,
+      evidenceCompleteness: validationSummary.completenessRate / 100,
+      lowConfidenceProblems
+    });
+    
+    if (lowConfidenceWarning.hasWarning) {
+      console.warn(`⚠️ [Low Confidence Warning] ${lowConfidenceWarning.message}`);
+      console.warn(`   级别: ${lowConfidenceWarning.level}`);
+      console.warn(`   受影响项: ${lowConfidenceWarning.affectedItems.join(', ')}`);
+      if (response.data) {
+        response.data.lowConfidenceWarning = lowConfidenceWarning;
+      }
+    }
+
+    // 添加证据来源追溯（analyze-exam接口没有图片，但保持接口一致性）
+    const { getEvidenceSourceTracker } = await import('./core/evidence-source-tracker');
+    const sourceTracker = getEvidenceSourceTracker();
+    sourceTracker.addSourceTracking(response, 0, 'batch');
+
     console.log('✅ 分析完成，返回结果');
     res.json(response);
 
   } catch (error) {
     console.error('❌ 处理请求失败:', error);
-    res.status(500).json({
-      success: false,
-      errorMessage: '服务器内部错误'
-    });
+    
+    // 使用错误消息管理器生成友好的错误提示
+    const { getErrorMessageManager } = await import('./core/error-message-manager');
+    const errorManager = getErrorMessageManager();
+    const errorMessage = errorManager.handleError(error as Error);
+    const errorResponse = errorManager.formatErrorResponse(errorMessage);
+    
+    console.error(`   错误代码: ${errorMessage.errorCode}`);
+    console.error(`   用户消息: ${errorMessage.userMessage}`);
+    
+    res.status(500).json(errorResponse);
   }
 });
 
@@ -1706,8 +2342,15 @@ app.post('/api/generate-practice', async (req, res) => {
   try {
     const { weakPoint, wrongQuestion, subject, grade, provider } = req.body;
 
-    if (!weakPoint) {
-      return res.status(400).json({ success: false, errorMessage: '缺少 weakPoint 参数' });
+    // 参数验证
+    if (!weakPoint || typeof weakPoint !== 'string' || !weakPoint.trim()) {
+      const { getErrorMessageManager } = await import('./core/error-message-manager');
+      const errorManager = getErrorMessageManager();
+      const errorMessage = errorManager.generateErrorMessage({
+        code: 'INVALID_REQUEST',
+        details: { reason: '缺少必需参数 weakPoint（薄弱点）' }
+      });
+      return res.status(400).json(errorManager.formatErrorResponse(errorMessage));
     }
 
     console.log(`\n🏋️ 收到精准训练生成请求: ${subject || '未知学科'} - ${weakPoint}`);
@@ -1823,7 +2466,20 @@ app.post('/api/generate-practice', async (req, res) => {
 
   } catch (error: any) {
     console.error('❌ 生成训练题失败:', error);
-    res.status(500).json({ success: false, errorMessage: error.message });
+    
+    // 使用错误消息管理器生成友好的错误提示
+    const { getErrorMessageManager } = await import('./core/error-message-manager');
+    const errorManager = getErrorMessageManager();
+    const errorMessage = errorManager.handleError(error as Error);
+    const errorResponse = errorManager.formatErrorResponse(errorMessage);
+    
+    console.error('📋 错误详情:', {
+      code: errorMessage.errorCode,
+      userMessage: errorMessage.userMessage,
+      technicalMessage: errorMessage.technicalMessage
+    });
+    
+    res.status(500).json(errorResponse);
   }
 });
 
@@ -1831,6 +2487,18 @@ app.post('/api/generate-practice', async (req, res) => {
 app.post('/api/generate-similar', async (req, res) => {
   try {
     const { questionText, knowledgePoints, count, provider, subject, grade } = req.body;
+    
+    // 参数验证
+    if (!questionText || typeof questionText !== 'string' || !questionText.trim()) {
+      const { getErrorMessageManager } = await import('./core/error-message-manager');
+      const errorManager = getErrorMessageManager();
+      const errorMessage = errorManager.generateErrorMessage({
+        code: 'INVALID_REQUEST',
+        details: { reason: '缺少必需参数 questionText（原题内容）' }
+      });
+      return res.status(400).json(errorManager.formatErrorResponse(errorMessage));
+    }
+    
     const modelProvider = (provider as any) || process.env.DEFAULT_PROVIDER || 'doubao';
     
     const subjectText = String(subject || '').trim();
@@ -1968,7 +2636,123 @@ ${strict ? '\n5. 严禁出现数学符号（如 x、y、=、+、-、÷ 等）或
 
   } catch (error: any) {
     console.error('❌ 生成变式题失败:', error);
-    res.status(500).json({ success: false, errorMessage: error.message });
+    
+    // 使用错误消息管理器生成友好的错误提示
+    const { getErrorMessageManager } = await import('./core/error-message-manager');
+    const errorManager = getErrorMessageManager();
+    const errorMessage = errorManager.handleError(error as Error);
+    const errorResponse = errorManager.formatErrorResponse(errorMessage);
+    
+    console.error('📋 错误详情:', {
+      code: errorMessage.errorCode,
+      userMessage: errorMessage.userMessage,
+      technicalMessage: errorMessage.technicalMessage
+    });
+    
+    res.status(500).json(errorResponse);
+  }
+});
+
+// 2.8 用户反馈收集接口 (新增)
+app.post('/api/feedback', async (req, res) => {
+  try {
+    const { analysisId, feedbackType, rating, content, specificIssues, userInfo, metadata } = req.body;
+
+    // 参数验证
+    if (!feedbackType || !content) {
+      const { getErrorMessageManager } = await import('./core/error-message-manager');
+      const errorManager = getErrorMessageManager();
+      const errorMessage = errorManager.generateErrorMessage({
+        code: 'INVALID_REQUEST',
+        details: { reason: '缺少必需参数 feedbackType 或 content' }
+      });
+      return res.status(400).json(errorManager.formatErrorResponse(errorMessage));
+    }
+
+    console.log(`\n💬 收到用户反馈: 类型=${feedbackType}, 评分=${rating || '未评分'}`);
+
+    // 使用反馈收集器
+    const { getFeedbackCollector } = await import('./core/feedback-collector');
+    const feedbackCollector = getFeedbackCollector();
+
+    // 验证反馈数据
+    const validation = feedbackCollector.validateFeedback({
+      feedbackType,
+      rating,
+      content,
+      specificIssues,
+      userInfo
+    });
+
+    if (!validation.valid) {
+      const { getErrorMessageManager } = await import('./core/error-message-manager');
+      const errorManager = getErrorMessageManager();
+      const errorMessage = errorManager.generateErrorMessage({
+        code: 'INVALID_REQUEST',
+        details: { reason: validation.errors.join('; ') }
+      });
+      return res.status(400).json(errorManager.formatErrorResponse(errorMessage));
+    }
+
+    // 收集反馈
+    const feedback = await feedbackCollector.collectFeedback({
+      analysisId,
+      feedbackType,
+      rating,
+      content,
+      specificIssues,
+      userInfo,
+      metadata
+    });
+
+    console.log(`✅ 反馈收集成功: ${feedback.id}`);
+
+    res.json({
+      success: true,
+      data: {
+        feedbackId: feedback.id,
+        message: '感谢您的反馈！我们会持续改进。'
+      }
+    });
+
+  } catch (error: any) {
+    console.error('❌ 收集反馈失败:', error);
+    
+    // 使用错误消息管理器生成友好的错误提示
+    const { getErrorMessageManager } = await import('./core/error-message-manager');
+    const errorManager = getErrorMessageManager();
+    const errorMessage = errorManager.handleError(error as Error);
+    const errorResponse = errorManager.formatErrorResponse(errorMessage);
+    
+    console.error('📋 错误详情:', {
+      code: errorMessage.errorCode,
+      userMessage: errorMessage.userMessage,
+      technicalMessage: errorMessage.technicalMessage
+    });
+    
+    res.status(500).json(errorResponse);
+  }
+});
+
+// 2.9 获取反馈摘要接口 (管理员用，可选)
+app.get('/api/feedback/summary', async (req, res) => {
+  try {
+    const { getFeedbackCollector } = await import('./core/feedback-collector');
+    const feedbackCollector = getFeedbackCollector();
+
+    const summary = await feedbackCollector.getFeedbackSummary(20);
+
+    res.json({
+      success: true,
+      data: summary
+    });
+
+  } catch (error: any) {
+    console.error('❌ 获取反馈摘要失败:', error);
+    res.status(500).json({
+      success: false,
+      errorMessage: '获取反馈摘要失败'
+    });
   }
 });
 
@@ -1977,6 +2761,52 @@ app.post('/api/analyze-images/jobs', async (req, res) => {
     const { images, provider, subject, grade, ocrTexts } = req.body || {};
     if (!images || !Array.isArray(images) || images.length === 0) {
       return res.status(400).json({ success: false, errorMessage: '请上传至少一张图片' });
+    }
+
+    // ✅ P2: 图片质量检查
+    const { getImageQualityChecker } = await import('./core/image-quality-checker');
+    const qualityChecker = getImageQualityChecker();
+    const qualityResults = [];
+    
+    for (let i = 0; i < images.length; i++) {
+      const image = images[i];
+      try {
+        const qualityResult = await qualityChecker.checkQuality(image);
+        qualityResults.push({
+          imageIndex: i,
+          ...qualityResult
+        });
+        
+        // 记录质量检查结果
+        console.log(`📸 [Image Quality] 图片 ${i + 1}/${images.length}: 评分 ${qualityResult.score}/100, 可继续: ${qualityResult.canProceed ? '是' : '否'}`);
+        
+        if (qualityResult.issues.length > 0) {
+          qualityResult.issues.forEach(issue => {
+            const emoji = issue.severity === 'high' ? '🔴' : issue.severity === 'medium' ? '🟡' : '🟢';
+            console.log(`   ${emoji} ${issue.message}`);
+          });
+        }
+      } catch (error) {
+        console.warn(`⚠️ [Image Quality] 图片 ${i + 1} 质量检查失败:`, error);
+        // 检查失败不阻塞流程
+      }
+    }
+    
+    // 检查是否有任何图片质量不合格
+    const hasLowQualityImages = qualityResults.some(r => !r.canProceed);
+    if (hasLowQualityImages) {
+      const lowQualityImages = qualityResults.filter(r => !r.canProceed);
+      console.warn(`⚠️ [Image Quality] 检测到 ${lowQualityImages.length} 张图片质量不佳`);
+      
+      // 返回质量警告（但不阻塞分析）
+      // 前端可以选择显示警告或继续
+      return res.json({
+        success: true,
+        warning: 'IMAGE_QUALITY_LOW',
+        message: '部分图片质量不佳，可能影响识别准确性',
+        qualityResults,
+        suggestions: lowQualityImages.flatMap(r => r.suggestions || [])
+      });
     }
 
     const id = (() => {
@@ -2010,8 +2840,9 @@ app.post('/api/analyze-images/jobs', async (req, res) => {
       updatedAt: now,
       request,
       imageCount,
-      estimateSeconds: estimateAnalyzeSeconds(imageCount),
+      estimateSeconds: estimateAnalyzeSeconds(imageCount, provider, Array.isArray(ocrTexts) && ocrTexts.length > 0),
       cacheKey,
+      qualityResults, // 保存质量检查结果
       ...(cached ? { result: cached } : {}),
     };
     imageAnalyzeJobs.set(id, job);
@@ -2035,7 +2866,7 @@ app.post('/api/analyze-images/jobs', async (req, res) => {
       pumpImageAnalyzeQueue();
     }
 
-    return res.json({ success: true, jobId: id });
+    return res.json({ success: true, jobId: id, qualityResults });
   } catch (e: any) {
     console.error('❌ 创建图片分析作业失败:', e);
     return res.status(500).json({ success: false, errorMessage: '服务器内部错误' });
@@ -2077,6 +2908,64 @@ app.post('/api/analyze-images/jobs/:jobId/cancel', (req, res) => {
       estimateSeconds: job.estimateSeconds,
     },
   });
+  return res.json({ success: true });
+});
+
+// ✅ UX优化: 用户确认低置信度识别结果
+app.post('/api/analyze-images/jobs/:jobId/confirm', (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  const job = imageAnalyzeJobs.get(jobId);
+  
+  if (!job) {
+    return res.status(404).json({ success: false, errorMessage: '作业不存在或已过期' });
+  }
+  
+  if (job.stage !== 'paused') {
+    return res.status(400).json({ success: false, errorMessage: '作业未处于暂停状态' });
+  }
+  
+  const { action, grade, subject } = req.body;
+  
+  if (!action || !['continue', 'modify', 'cancel'].includes(action)) {
+    return res.status(400).json({ success: false, errorMessage: '无效的操作类型' });
+  }
+  
+  if (action === 'modify' && (!grade || !subject)) {
+    return res.status(400).json({ success: false, errorMessage: '修正操作需要提供年级和学科' });
+  }
+  
+  // 保存用户确认信息
+  job.userConfirmation = {
+    action,
+    grade,
+    subject
+  };
+  
+  job.updatedAt = Date.now();
+  
+  console.log(`✅ [User Confirmation] 用户确认: action=${action}, grade=${grade || 'N/A'}, subject=${subject || 'N/A'}`);
+  
+  // 如果用户取消，更新作业状态
+  if (action === 'cancel') {
+    job.status = 'canceled';
+    job.stage = 'canceled';
+    job.errorMessage = '用户取消分析';
+    
+    broadcastSse(jobId, {
+      type: 'snapshot',
+      job: {
+        id: job.id,
+        status: job.status,
+        stage: job.stage,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        errorMessage: job.errorMessage,
+        imageCount: job.imageCount,
+        estimateSeconds: job.estimateSeconds,
+      },
+    });
+  }
+  
   return res.json({ success: true });
 });
 
@@ -2131,6 +3020,73 @@ app.post('/api/analyze-images/jobs/:jobId/retry', (req, res) => {
   pumpImageAnalyzeQueue();
 
   return res.json({ success: true, bypassCache });
+});
+
+// ✅ UX优化: 重新分析接口（使用修正后的年级和学科）
+app.post('/api/analyze-images/jobs/:jobId/reanalyze', (req, res) => {
+  const jobId = String(req.params.jobId || '').trim();
+  const job = imageAnalyzeJobs.get(jobId);
+  
+  if (!job) {
+    return res.status(404).json({ success: false, errorMessage: '作业不存在或已过期' });
+  }
+  
+  if (job.status === 'running' || job.status === 'pending') {
+    return res.status(400).json({ success: false, errorMessage: '作业正在进行中，无法重新分析' });
+  }
+  
+  const { grade, subject } = req.body || {};
+  
+  if (!grade || !subject) {
+    return res.status(400).json({ success: false, errorMessage: '缺少必需参数：grade 和 subject' });
+  }
+  
+  console.log(`🔄 [Reanalyze] 开始重新分析作业 ${jobId}，使用修正后的年级=${grade}, 学科=${subject}`);
+  
+  // 更新请求参数
+  job.request.grade = grade;
+  job.request.subject = subject;
+  
+  // 重置作业状态
+  job.status = 'pending';
+  job.stage = 'queued';
+  job.errorMessage = undefined;
+  job.partialResult = undefined;
+  job.result = undefined;
+  job.events = [];
+  job.bypassCache = true; // 强制跳过缓存
+  job.updatedAt = Date.now();
+  
+  // 从队列中移除（如果存在）
+  for (let i = imageAnalyzeJobQueue.length - 1; i >= 0; i -= 1) {
+    if (imageAnalyzeJobQueue[i] === jobId) {
+      imageAnalyzeJobQueue.splice(i, 1);
+    }
+  }
+  
+  // 广播状态更新
+  broadcastSse(jobId, {
+    type: 'snapshot',
+    job: {
+      id: job.id,
+      status: job.status,
+      stage: job.stage,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+      imageCount: job.imageCount,
+      estimateSeconds: job.estimateSeconds,
+    },
+  });
+  
+  // 重新加入队列
+  imageAnalyzeJobQueue.push(jobId);
+  pumpImageAnalyzeQueue();
+  
+  return res.json({ 
+    success: true, 
+    message: '重新分析已开始',
+    jobId: jobId
+  });
 });
 
 app.get('/api/analyze-images/jobs/:jobId', (req, res) => {
@@ -2253,7 +3209,8 @@ ${grade ? `【重要提示】学生年级为：${grade}，请参考此学段的�
 
 1. 试卷名称：识别试卷顶部的标题（如“2023-2024学年三年级数学期末试卷”）。
 2. 学科：识别试卷学科（如 数学/语文/英语）。
-3. 总分与得分：识别学生总得分和试卷满分。
+3. 年级：从试卷名称或内容中识别学生年级（如 三年级/初二/高二等）。如果无法确定，标记为"未知"。
+4. 总分与得分：识别学生总得分和试卷满分。
 4. 题型得分详情：分析各个大题（如“一、计算题”“二、填空题”“三、阅读理解”“四、作文”等）的得分情况。
    - 需要提取：题型名称、该部分学生得分、该部分满分。
 5. 卷面观感：评价书写工整度。
@@ -2287,6 +3244,7 @@ ${subject ? getSubjectPracticeInstruction(subject) : `
   "meta": {
     "examName": "试卷标题",
     "subject": "数学",
+    "grade": "高二",
     "score": 85,
     "fullScore": 100,
     "typeAnalysis": [
@@ -2395,6 +3353,21 @@ ${rawContent}
     }
 
     const meta = reportJson.meta || {};
+    
+    // 从试卷名称中推断年级（如果meta中没有grade字段）
+    let inferredGrade = meta.grade || grade || '未知';
+    if (!meta.grade && meta.examName) {
+      const examName = meta.examName;
+      // 使用多维度推断器来识别年级
+      const multiDimensionInferencer = getMultiDimensionInferencer();
+      
+      // 从标题推断
+      const titleResult = multiDimensionInferencer.inferFromTitle(examName);
+      inferredGrade = titleResult.grade || '未知';
+      
+      console.log(`📊 [Grade Inference] 从试卷名称"${examName}"推断年级: ${inferredGrade} (置信度: ${(titleResult.confidence * 100).toFixed(0)}%)`);
+    }
+    
     const response: AnalyzeExamResponse = {
       success: true,
       data: {
@@ -2414,6 +3387,7 @@ ${rawContent}
         typeAnalysis: meta.typeAnalysis || [],
         paperAppearance: meta.paperAppearance,
         subject: meta.subject,
+        grade: inferredGrade,  // 添加年级字段
         review: reportJson.review,
         rawLlmOutput: JSON.stringify(reportJson),
         practiceQuestions: reportJson.practiceQuestions || [],
@@ -2422,12 +3396,37 @@ ${rawContent}
       }
     };
 
+    // 验证证据完整性
+    const { getEvidenceValidator } = await import('./core/evidence-validator');
+    const evidenceValidator = getEvidenceValidator();
+    const problems = response.data?.report.forStudent.problems || [];
+    const validationSummary = evidenceValidator.validateProblems(problems);
+    
+    console.log(`📋 [Evidence Validation] 证据完整性: ${validationSummary.completenessRate.toFixed(1)}% (${validationSummary.validProblems}/${validationSummary.totalProblems})`);
+    
+    if (validationSummary.invalidProblems > 0) {
+      console.log(`⚠️ [Evidence Validation] 发现 ${validationSummary.invalidProblems} 个不完整的问题`);
+      validationSummary.issues.forEach((issue, index) => {
+        console.log(`   问题 ${index + 1}: 缺失字段=${issue.missingFields.join(',') || '无'}, 无效字段=${issue.invalidFields.join(',') || '无'}`);
+      });
+    }
+
     console.log('✅ 图片分析完成，返回结果');
     res.json(response);
 
   } catch (error) {
     console.error('❌ 处理图片请求失败:', error);
-    res.status(500).json({ success: false, errorMessage: '服务器内部错误' });
+    
+    // 使用错误消息管理器生成友好的错误提示
+    const { getErrorMessageManager } = await import('./core/error-message-manager');
+    const errorManager = getErrorMessageManager();
+    const errorMessage = errorManager.handleError(error as Error);
+    const errorResponse = errorManager.formatErrorResponse(errorMessage);
+    
+    console.error(`   错误代码: ${errorMessage.errorCode}`);
+    console.error(`   用户消息: ${errorMessage.userMessage}`);
+    
+    res.status(500).json(errorResponse);
   }
 });
 

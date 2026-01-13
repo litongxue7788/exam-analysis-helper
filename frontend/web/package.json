@@ -12,6 +12,10 @@
   "dependencies": {
     "@types/papaparse": "^5.5.2",
     "canvas-confetti": "^1.9.4",
+    "crypto-js": "^4.2.0",
+    "html2canvas": "^1.4.1",
+    "idb": "^8.0.3",
+    "jspdf": "^4.0.0",
     "katex": "^0.16.27",
     "lucide-react": "^0.561.0",
     "papaparse": "^5.5.3",
@@ -21,6 +25,7 @@
   },
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",
+    "@types/crypto-js": "^4.2.2",
     "@types/react": "^18.2.55",
     "@types/react-dom": "^18.2.19",
     "@vitejs/plugin-react": "^4.2.1",

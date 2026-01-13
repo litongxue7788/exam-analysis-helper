@@ -1,0 +1,84 @@
+.evidence-source-info {
+  margin-top: 8px;
+  padding: 8px;
+  background-color: #f8fafc;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  font-size: 12px;
+}
+
+.evidence-source-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.evidence-source-row:last-child {
+  margin-bottom: 0;
+}
+
+.evidence-source-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 60px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.evidence-source-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.source-text {
+  color: #374151;
+}
+
+.view-original-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  background-color: #3b82f6;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.view-original-btn:hover {
+  background-color: #2563eb;
+}
+
+.view-original-btn:disabled {
+  background-color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.confidence-badge {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+  .evidence-source-info {
+    font-size: 11px;
+  }
+  
+  .evidence-source-label {
+    min-width: 50px;
+  }
+  
+  .view-original-btn {
+    font-size: 10px;
+    padding: 1px 4px;
+  }
+}

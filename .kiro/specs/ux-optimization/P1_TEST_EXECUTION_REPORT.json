@@ -1,0 +1,97 @@
+{
+  "timestamp": "2026-01-12T08:54:56.468Z",
+  "duration": "0.06秒",
+  "summary": {
+    "total": 12,
+    "passed": 9,
+    "failed": 2,
+    "skipped": 1,
+    "passRate": "81.82%"
+  },
+  "tests": [
+    {
+      "name": "1.1 TypeScript 类型检查",
+      "status": "passed",
+      "message": "所有核心文件存在且类型正确",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.413Z"
+    },
+    {
+      "name": "1.2 核心工具函数检查",
+      "status": "passed",
+      "message": "所有工具函数文件存在",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.414Z"
+    },
+    {
+      "name": "1.3 组件文件检查",
+      "status": "passed",
+      "message": "所有组件文件存在",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.414Z"
+    },
+    {
+      "name": "2.1 后端服务器连接",
+      "status": "failed",
+      "message": "fetch failed",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.463Z"
+    },
+    {
+      "name": "2.2 创建分析任务 API",
+      "status": "skipped",
+      "message": "需要实际图片数据，建议手动测试",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.463Z"
+    },
+    {
+      "name": "3.1 P0 完成文档",
+      "status": "passed",
+      "message": "所有 P0 完成文档存在",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.464Z"
+    },
+    {
+      "name": "3.2 P1 完成文档",
+      "status": "passed",
+      "message": "所有 P1 完成文档存在",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.464Z"
+    },
+    {
+      "name": "3.3 测试计划文档",
+      "status": "passed",
+      "message": "所有测试计划文档存在",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.465Z"
+    },
+    {
+      "name": "4.1 package.json 依赖检查",
+      "status": "passed",
+      "message": "所有必需依赖已安装",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.465Z"
+    },
+    {
+      "name": "4.2 node_modules 检查",
+      "status": "passed",
+      "message": "所有必需模块已安装",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.466Z"
+    },
+    {
+      "name": "5.1 文件大小检查",
+      "status": "passed",
+      "message": "所有文件大小合理",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.466Z"
+    },
+    {
+      "name": "5.2 代码复杂度检查",
+      "status": "failed",
+      "message": "frontend/web/src/pages/Home.tsx 过长 (1906 行)",
+      "actualResult": "",
+      "timestamp": "2026-01-12T08:54:56.467Z"
+    }
+  ]
+}

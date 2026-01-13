@@ -55,7 +55,7 @@ function App() {
 
   const handleSwitchExam = (index: number) => {
     setCurrentExamIndex(index);
-    setActiveTab('analyze');
+    setActiveTab('report'); // 修复：直接跳转到报告页面，而不是分析页面
   };
 
   const handleUpdateExam = (newData: any) => {

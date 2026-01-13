@@ -1,0 +1,514 @@
+{
+  "knowledgePoints": [
+    {
+      "id": "math-primary-addition",
+      "name": "加法运算",
+      "aliases": ["加法", "加减法", "加", "求和"],
+      "subject": "数学",
+      "grades": ["一年级", "二年级", "三年级"],
+      "difficulty": "basic",
+      "keywords": ["加", "和", "总共", "一共", "合计"],
+      "examples": ["3+5=?", "小明有3个苹果，又买了2个"]
+    },
+    {
+      "id": "math-primary-subtraction",
+      "name": "减法运算",
+      "aliases": ["减法", "减", "求差"],
+      "subject": "数学",
+      "grades": ["一年级", "二年级", "三年级"],
+      "difficulty": "basic",
+      "keywords": ["减", "差", "还剩", "少了"],
+      "examples": ["8-3=?", "小明有8个苹果，吃了3个"]
+    },
+    {
+      "id": "math-primary-multiplication",
+      "name": "乘法运算",
+      "aliases": ["乘法", "乘", "乘法口诀"],
+      "subject": "数学",
+      "grades": ["二年级", "三年级", "四年级"],
+      "difficulty": "basic",
+      "keywords": ["乘", "积", "倍", "几个几"],
+      "examples": ["3×5=?", "5个3是多少"]
+    },
+    {
+      "id": "math-primary-division",
+      "name": "除法运算",
+      "aliases": ["除法", "除", "平均分"],
+      "subject": "数学",
+      "grades": ["三年级", "四年级"],
+      "difficulty": "basic",
+      "keywords": ["除", "商", "平均", "每份"],
+      "examples": ["15÷3=?", "15个苹果平均分给3人"]
+    },
+    {
+      "id": "math-primary-fraction",
+      "name": "分数",
+      "aliases": ["分数", "分数加减", "分数乘除"],
+      "subject": "数学",
+      "grades": ["四年级", "五年级", "六年级"],
+      "difficulty": "medium",
+      "keywords": ["分数", "分子", "分母", "通分", "约分"],
+      "examples": ["1/2 + 1/3", "化简分数"]
+    },
+    {
+      "id": "math-primary-geometry",
+      "name": "认识图形",
+      "aliases": ["图形", "几何", "平面图形", "立体图形"],
+      "subject": "数学",
+      "grades": ["一年级", "二年级", "三年级", "四年级"],
+      "difficulty": "basic",
+      "keywords": ["圆", "正方形", "长方形", "三角形", "周长", "面积"],
+      "examples": ["正方形有几条边", "计算长方形面积"]
+    },
+    {
+      "id": "math-middle-equation",
+      "name": "一元一次方程",
+      "aliases": ["方程", "一元一次", "解方程"],
+      "subject": "数学",
+      "grades": ["初一", "七年级"],
+      "difficulty": "medium",
+      "keywords": ["方程", "未知数", "x", "解", "移项"],
+      "examples": ["2x+3=7", "解方程 3x-5=10"]
+    },
+    {
+      "id": "math-middle-inequality",
+      "name": "不等式",
+      "aliases": ["不等式", "不等式组"],
+      "subject": "数学",
+      "grades": ["初一", "初二", "七年级", "八年级"],
+      "difficulty": "medium",
+      "keywords": ["不等式", "大于", "小于", "不等号"],
+      "examples": ["2x+1>5", "解不等式"]
+    },
+    {
+      "id": "math-middle-function",
+      "name": "函数",
+      "aliases": ["函数", "一次函数", "反比例函数"],
+      "subject": "数学",
+      "grades": ["初二", "初三", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["函数", "自变量", "因变量", "图像", "y=kx+b"],
+      "examples": ["y=2x+1", "画函数图像"]
+    },
+    {
+      "id": "math-middle-quadratic",
+      "name": "一元二次方程",
+      "aliases": ["二次方程", "一元二次", "配方法", "求根公式"],
+      "subject": "数学",
+      "grades": ["初二", "初三", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["x²", "ax²+bx+c=0", "判别式", "根", "韦达定理"],
+      "examples": ["解方程 x²-5x+6=0", "配方法"]
+    },
+    {
+      "id": "math-middle-triangle",
+      "name": "三角形",
+      "aliases": ["三角形", "全等三角形", "相似三角形"],
+      "subject": "数学",
+      "grades": ["初一", "初二", "七年级", "八年级"],
+      "difficulty": "medium",
+      "keywords": ["三角形", "全等", "相似", "勾股定理", "三边关系"],
+      "examples": ["证明三角形全等", "勾股定理应用"]
+    },
+    {
+      "id": "math-middle-circle",
+      "name": "圆",
+      "aliases": ["圆", "圆的性质", "圆周角"],
+      "subject": "数学",
+      "grades": ["初三", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["圆", "圆心", "半径", "直径", "圆周角", "切线"],
+      "examples": ["圆的周长", "圆周角定理"]
+    },
+    {
+      "id": "math-high-set",
+      "name": "集合",
+      "aliases": ["集合", "集合运算"],
+      "subject": "数学",
+      "grades": ["高一"],
+      "difficulty": "medium",
+      "keywords": ["集合", "元素", "交集", "并集", "补集"],
+      "examples": ["A∩B", "A∪B"]
+    },
+    {
+      "id": "math-high-function-advanced",
+      "name": "函数性质",
+      "aliases": ["函数", "函数性质", "单调性", "奇偶性"],
+      "subject": "数学",
+      "grades": ["高一", "高二"],
+      "difficulty": "hard",
+      "keywords": ["单调性", "奇偶性", "周期性", "对称性"],
+      "examples": ["判断函数单调性", "证明函数奇偶性"]
+    },
+    {
+      "id": "math-high-trigonometry",
+      "name": "三角函数",
+      "aliases": ["三角函数", "正弦", "余弦", "正切"],
+      "subject": "数学",
+      "grades": ["高一", "高二"],
+      "difficulty": "hard",
+      "keywords": ["sin", "cos", "tan", "三角恒等变换", "诱导公式"],
+      "examples": ["sin²x+cos²x=1", "三角函数图像"]
+    },
+    {
+      "id": "math-high-vector",
+      "name": "向量",
+      "aliases": ["向量", "平面向量", "空间向量"],
+      "subject": "数学",
+      "grades": ["高一", "高二"],
+      "difficulty": "hard",
+      "keywords": ["向量", "数量积", "向量运算", "坐标表示"],
+      "examples": ["向量加法", "向量数量积"]
+    },
+    {
+      "id": "math-high-sequence",
+      "name": "数列",
+      "aliases": ["数列", "等差数列", "等比数列"],
+      "subject": "数学",
+      "grades": ["高二"],
+      "difficulty": "hard",
+      "keywords": ["数列", "通项公式", "求和", "等差", "等比"],
+      "examples": ["等差数列求和", "等比数列通项"]
+    },
+    {
+      "id": "math-high-derivative",
+      "name": "导数",
+      "aliases": ["求导", "导函数", "微分", "导数应用"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["f'(x)", "dy/dx", "切线", "极值", "单调区间"],
+      "examples": ["求函数 f(x)=x³ 的导数", "求极值"]
+    },
+    {
+      "id": "math-high-integral",
+      "name": "积分",
+      "aliases": ["积分", "定积分", "不定积分"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["∫", "积分", "原函数", "面积"],
+      "examples": ["∫x²dx", "定积分计算面积"]
+    },
+    {
+      "id": "math-high-solid-geometry",
+      "name": "立体几何",
+      "aliases": ["立体几何", "空间几何", "三视图"],
+      "subject": "数学",
+      "grades": ["高一", "高二"],
+      "difficulty": "hard",
+      "keywords": ["空间", "平行", "垂直", "三视图", "体积", "表面积"],
+      "examples": ["证明线面平行", "求几何体体积"]
+    },
+    {
+      "id": "math-high-conic-sections",
+      "name": "圆锥曲线",
+      "aliases": ["圆锥曲线", "二次曲线"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["圆锥曲线", "椭圆", "双曲线", "抛物线", "离心率", "焦点", "准线"],
+      "examples": ["求椭圆方程", "双曲线性质"]
+    },
+    {
+      "id": "math-high-ellipse",
+      "name": "椭圆",
+      "aliases": ["椭圆", "椭圆方程"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["椭圆", "长轴", "短轴", "焦距", "离心率", "x²/a²+y²/b²=1"],
+      "examples": ["求椭圆标准方程", "椭圆的几何性质"]
+    },
+    {
+      "id": "math-high-hyperbola",
+      "name": "双曲线",
+      "aliases": ["双曲线", "双曲线方程"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["双曲线", "渐近线", "焦距", "离心率", "x²/a²-y²/b²=1"],
+      "examples": ["求双曲线方程", "双曲线渐近线"]
+    },
+    {
+      "id": "math-high-parabola",
+      "name": "抛物线",
+      "aliases": ["抛物线", "抛物线方程"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["抛物线", "焦点", "准线", "y²=2px", "顶点"],
+      "examples": ["求抛物线方程", "抛物线焦点弦"]
+    },
+    {
+      "id": "math-high-analytic-geometry",
+      "name": "解析几何",
+      "aliases": ["解析几何", "坐标几何", "直线与圆"],
+      "subject": "数学",
+      "grades": ["高一", "高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["解析几何", "直线方程", "圆的方程", "点到直线距离", "两点间距离"],
+      "examples": ["求直线方程", "圆与直线位置关系"]
+    },
+    {
+      "id": "math-high-parametric-equation",
+      "name": "参数方程",
+      "aliases": ["参数方程", "极坐标"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["参数方程", "极坐标", "参数", "极径", "极角"],
+      "examples": ["参数方程化普通方程", "极坐标方程"]
+    },
+    {
+      "id": "math-high-inequality-advanced",
+      "name": "不等式",
+      "aliases": ["不等式", "基本不等式", "均值不等式"],
+      "subject": "数学",
+      "grades": ["高一", "高二"],
+      "difficulty": "hard",
+      "keywords": ["基本不等式", "均值不等式", "柯西不等式", "a+b≥2√ab"],
+      "examples": ["基本不等式应用", "求最值"]
+    },
+    {
+      "id": "math-high-probability",
+      "name": "概率统计",
+      "aliases": ["概率", "统计", "概率统计"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["概率", "统计", "期望", "方差", "正态分布", "二项分布"],
+      "examples": ["求概率", "计算期望"]
+    },
+    {
+      "id": "math-high-complex-number",
+      "name": "复数",
+      "aliases": ["复数", "虚数"],
+      "subject": "数学",
+      "grades": ["高二"],
+      "difficulty": "hard",
+      "keywords": ["复数", "虚数", "i", "模", "辐角", "共轭复数"],
+      "examples": ["复数运算", "复数的几何意义"]
+    },
+    {
+      "id": "math-high-matrix",
+      "name": "矩阵",
+      "aliases": ["矩阵", "行列式"],
+      "subject": "数学",
+      "grades": ["高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["矩阵", "行列式", "矩阵运算", "逆矩阵"],
+      "examples": ["矩阵乘法", "求行列式"]
+    },
+    {
+      "id": "math-high-limit",
+      "name": "极限",
+      "aliases": ["极限", "数列极限", "函数极限"],
+      "subject": "数学",
+      "grades": ["高三"],
+      "difficulty": "hard",
+      "keywords": ["极限", "lim", "无穷", "趋近"],
+      "examples": ["求数列极限", "求函数极限"]
+    },
+    {
+      "id": "chinese-primary-pinyin",
+      "name": "拼音",
+      "aliases": ["拼音", "声母", "韵母"],
+      "subject": "语文",
+      "grades": ["一年级", "二年级"],
+      "difficulty": "basic",
+      "keywords": ["拼音", "声母", "韵母", "音节"],
+      "examples": ["给汉字注音", "拼读音节"]
+    },
+    {
+      "id": "chinese-primary-character",
+      "name": "识字写字",
+      "aliases": ["识字", "写字", "笔画", "笔顺"],
+      "subject": "语文",
+      "grades": ["一年级", "二年级", "三年级"],
+      "difficulty": "basic",
+      "keywords": ["汉字", "笔画", "笔顺", "偏旁", "部首"],
+      "examples": ["写出汉字笔顺", "组词"]
+    },
+    {
+      "id": "chinese-primary-reading",
+      "name": "阅读理解",
+      "aliases": ["阅读", "阅读理解", "短文阅读"],
+      "subject": "语文",
+      "grades": ["三年级", "四年级", "五年级", "六年级"],
+      "difficulty": "medium",
+      "keywords": ["阅读", "理解", "主旨", "段意", "中心思想"],
+      "examples": ["概括段落大意", "理解文章主旨"]
+    },
+    {
+      "id": "chinese-primary-composition",
+      "name": "写作",
+      "aliases": ["作文", "写作", "看图写话"],
+      "subject": "语文",
+      "grades": ["三年级", "四年级", "五年级", "六年级"],
+      "difficulty": "medium",
+      "keywords": ["作文", "写作", "记叙文", "描写", "叙述"],
+      "examples": ["写一篇记叙文", "看图写话"]
+    },
+    {
+      "id": "chinese-middle-classical",
+      "name": "文言文",
+      "aliases": ["文言文", "古文", "文言文阅读"],
+      "subject": "语文",
+      "grades": ["初一", "初二", "初三", "七年级", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["文言文", "实词", "虚词", "翻译", "断句"],
+      "examples": ["翻译文言文", "解释实词"]
+    },
+    {
+      "id": "chinese-middle-poetry",
+      "name": "古诗词",
+      "aliases": ["古诗", "诗词", "古诗词鉴赏"],
+      "subject": "语文",
+      "grades": ["初一", "初二", "初三", "七年级", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["古诗", "诗词", "意象", "意境", "手法"],
+      "examples": ["赏析诗句", "理解诗歌意境"]
+    },
+    {
+      "id": "chinese-middle-reading-advanced",
+      "name": "现代文阅读",
+      "aliases": ["现代文", "阅读理解", "散文", "小说"],
+      "subject": "语文",
+      "grades": ["初一", "初二", "初三", "七年级", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["现代文", "散文", "小说", "说明文", "议论文"],
+      "examples": ["分析人物形象", "理解文章结构"]
+    },
+    {
+      "id": "chinese-middle-composition-advanced",
+      "name": "议论文写作",
+      "aliases": ["议论文", "作文", "论证"],
+      "subject": "语文",
+      "grades": ["初二", "初三", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["议论文", "论点", "论据", "论证", "驳论"],
+      "examples": ["写一篇议论文", "论证方法"]
+    },
+    {
+      "id": "chinese-high-classical-advanced",
+      "name": "文言文阅读",
+      "aliases": ["文言文", "古文阅读", "文言文翻译"],
+      "subject": "语文",
+      "grades": ["高一", "高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["文言文", "实词", "虚词", "句式", "翻译"],
+      "examples": ["翻译并理解文言文", "分析文言句式"]
+    },
+    {
+      "id": "chinese-high-poetry-advanced",
+      "name": "诗歌鉴赏",
+      "aliases": ["诗歌", "诗词鉴赏", "古诗鉴赏"],
+      "subject": "语文",
+      "grades": ["高一", "高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["诗歌", "意象", "意境", "表现手法", "情感"],
+      "examples": ["鉴赏诗歌艺术手法", "分析诗歌情感"]
+    },
+    {
+      "id": "chinese-high-composition-advanced",
+      "name": "议论文写作",
+      "aliases": ["议论文", "作文", "思辨性写作"],
+      "subject": "语文",
+      "grades": ["高一", "高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["议论文", "思辨", "论证", "素材", "立意"],
+      "examples": ["写思辨性议论文", "深度论证"]
+    },
+    {
+      "id": "english-primary-alphabet",
+      "name": "字母",
+      "aliases": ["字母", "26个字母", "ABC"],
+      "subject": "英语",
+      "grades": ["三年级", "四年级"],
+      "difficulty": "basic",
+      "keywords": ["字母", "大写", "小写", "alphabet"],
+      "examples": ["写出26个字母", "字母大小写"]
+    },
+    {
+      "id": "english-primary-vocabulary",
+      "name": "词汇",
+      "aliases": ["单词", "词汇", "记单词"],
+      "subject": "英语",
+      "grades": ["三年级", "四年级", "五年级", "六年级"],
+      "difficulty": "basic",
+      "keywords": ["单词", "词汇", "拼写", "词义"],
+      "examples": ["单词拼写", "单词意思"]
+    },
+    {
+      "id": "english-primary-grammar-basic",
+      "name": "基础语法",
+      "aliases": ["语法", "句型", "时态"],
+      "subject": "英语",
+      "grades": ["四年级", "五年级", "六年级"],
+      "difficulty": "basic",
+      "keywords": ["语法", "句型", "一般现在时", "一般过去时"],
+      "examples": ["一般现在时", "be动词用法"]
+    },
+    {
+      "id": "english-middle-grammar",
+      "name": "语法",
+      "aliases": ["语法", "时态", "语态", "从句"],
+      "subject": "英语",
+      "grades": ["初一", "初二", "初三", "七年级", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["时态", "语态", "从句", "非谓语", "虚拟语气"],
+      "examples": ["现在完成时", "定语从句"]
+    },
+    {
+      "id": "english-middle-reading",
+      "name": "阅读理解",
+      "aliases": ["阅读", "阅读理解", "完形填空"],
+      "subject": "英语",
+      "grades": ["初一", "初二", "初三", "七年级", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["阅读", "理解", "主旨", "细节", "推断"],
+      "examples": ["阅读理解题", "完形填空"]
+    },
+    {
+      "id": "english-middle-writing",
+      "name": "写作",
+      "aliases": ["写作", "作文", "书面表达"],
+      "subject": "英语",
+      "grades": ["初一", "初二", "初三", "七年级", "八年级", "九年级"],
+      "difficulty": "medium",
+      "keywords": ["写作", "作文", "书信", "日记", "通知"],
+      "examples": ["写一封信", "写日记"]
+    },
+    {
+      "id": "english-high-grammar-advanced",
+      "name": "高级语法",
+      "aliases": ["语法", "复杂句", "从句", "非谓语"],
+      "subject": "英语",
+      "grades": ["高一", "高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["复杂句", "从句", "非谓语动词", "虚拟语气", "倒装"],
+      "examples": ["非谓语动词", "虚拟语气"]
+    },
+    {
+      "id": "english-high-reading-advanced",
+      "name": "阅读理解",
+      "aliases": ["阅读", "阅读理解", "长难句"],
+      "subject": "英语",
+      "grades": ["高一", "高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["阅读", "长难句", "主旨大意", "推理判断"],
+      "examples": ["理解长难句", "推理判断题"]
+    },
+    {
+      "id": "english-high-writing-advanced",
+      "name": "写作",
+      "aliases": ["写作", "作文", "应用文", "议论文"],
+      "subject": "英语",
+      "grades": ["高一", "高二", "高三"],
+      "difficulty": "hard",
+      "keywords": ["写作", "应用文", "议论文", "连接词", "高级词汇"],
+      "examples": ["写议论文", "应用文写作"]
+    }
+  ]
+}

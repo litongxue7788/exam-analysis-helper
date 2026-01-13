@@ -1,0 +1,291 @@
+/* =================================================================================
+   低置信度确认对话框样式 (LowConfidenceConfirmDialog)
+   ================================================================================= */
+
+.low-confidence-dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.low-confidence-dialog {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  max-width: 500px;
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
+  animation: slideUp 0.3s ease-out;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 24px 16px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.dialog-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.dialog-icon.warning {
+  background: #fff7ed;
+  color: #f59e0b;
+}
+
+.dialog-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.dialog-content {
+  padding: 24px;
+}
+
+.confidence-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  background: #f9fafb;
+  border-radius: 12px;
+  margin-bottom: 20px;
+}
+
+.confidence-label {
+  font-size: 14px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.confidence-value {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.recognition-result {
+  margin-bottom: 20px;
+}
+
+.result-label {
+  font-size: 14px;
+  color: #6b7280;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.result-display {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.result-item {
+  display: flex;
+  align-items: center;
+  padding: 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+}
+
+.result-key {
+  font-size: 14px;
+  color: #6b7280;
+  font-weight: 500;
+  min-width: 60px;
+}
+
+.result-value {
+  font-size: 14px;
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.result-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-group label {
+  font-size: 14px;
+  color: #374151;
+  font-weight: 500;
+}
+
+.form-select {
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 14px;
+  color: #1f2937;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.form-select:hover {
+  border-color: #9ca3af;
+}
+
+.form-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.dialog-hint {
+  padding: 16px;
+  background: #eff6ff;
+  border-left: 3px solid #3b82f6;
+  border-radius: 8px;
+  margin-bottom: 0;
+}
+
+.dialog-hint p {
+  margin: 0;
+  font-size: 13px;
+  color: #1e40af;
+  line-height: 1.6;
+}
+
+.dialog-hint p + p {
+  margin-top: 8px;
+}
+
+.dialog-actions {
+  display: flex;
+  gap: 12px;
+  padding: 16px 24px 24px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.dialog-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.dialog-btn.primary {
+  background: #3b82f6;
+  color: white;
+}
+
+.dialog-btn.primary:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+}
+
+.dialog-btn.secondary {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+.dialog-btn.secondary:hover {
+  background: #e5e7eb;
+}
+
+.dialog-btn.warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.dialog-btn.warning:hover {
+  background: #fde68a;
+}
+
+.dialog-btn:active {
+  transform: translateY(0);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 移动端适配 */
+@media (max-width: 640px) {
+  .low-confidence-dialog {
+    max-width: 100%;
+    width: 95%;
+    margin: 20px;
+  }
+
+  .dialog-header {
+    padding: 20px 20px 12px;
+  }
+
+  .dialog-icon {
+    width: 40px;
+    height: 40px;
+  }
+
+  .dialog-title {
+    font-size: 16px;
+  }
+
+  .dialog-content {
+    padding: 20px;
+  }
+
+  .dialog-actions {
+    flex-direction: column;
+    padding: 12px 20px 20px;
+  }
+
+  .dialog-btn {
+    width: 100%;
+  }
+}

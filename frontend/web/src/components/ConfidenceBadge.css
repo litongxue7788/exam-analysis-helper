@@ -1,0 +1,205 @@
+/* =================================================================================
+   置信度徽章样式 (ConfidenceBadge)
+   ================================================================================= */
+
+.confidence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  border: 1.5px solid;
+  font-size: 13px;
+  font-weight: 600;
+  position: relative;
+  cursor: help;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.confidence-badge.compact {
+  padding: 3px 8px;
+  font-size: 12px;
+  gap: 4px;
+}
+
+.confidence-badge:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* 图标 */
+.badge-icon {
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confidence-badge.compact .badge-icon {
+  font-size: 12px;
+}
+
+/* 标签 */
+.badge-label {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+/* 百分比 */
+.badge-percentage {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 高置信度 */
+.confidence-badge.confidence-high {
+  animation: subtle-pulse-green 2s ease-in-out infinite;
+}
+
+@keyframes subtle-pulse-green {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0);
+  }
+}
+
+/* 中等置信度 */
+.confidence-badge.confidence-medium {
+  animation: subtle-pulse-yellow 2s ease-in-out infinite;
+}
+
+@keyframes subtle-pulse-yellow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(245, 158, 11, 0);
+  }
+}
+
+/* 低置信度 */
+.confidence-badge.confidence-low,
+.confidence-badge.confidence-very-low {
+  animation: pulse-red 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-red {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+  }
+}
+
+/* 提示框 */
+.badge-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(12px);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  min-width: 220px;
+  animation: tooltip-fade-in 0.2s ease;
+  pointer-events: none;
+}
+
+@keyframes tooltip-fade-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* 提示框箭头 */
+.badge-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-bottom: 6px solid rgba(255, 255, 255, 0.98);
+}
+
+.tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.tooltip-icon {
+  font-size: 16px;
+}
+
+.tooltip-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.tooltip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tooltip-confidence {
+  font-size: 12px;
+  font-weight: 600;
+  color: #475569;
+  margin: 0;
+}
+
+.tooltip-hint {
+  font-size: 12px;
+  color: #64748b;
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* 响应式设计 */
+@media (max-width: 640px) {
+  .confidence-badge {
+    font-size: 12px;
+    padding: 3px 8px;
+    gap: 4px;
+  }
+
+  .badge-icon {
+    font-size: 12px;
+  }
+
+  .badge-tooltip {
+    min-width: 200px;
+    font-size: 11px;
+  }
+
+  .tooltip-title {
+    font-size: 12px;
+  }
+
+  .tooltip-confidence,
+  .tooltip-hint {
+    font-size: 11px;
+  }
+}
